@@ -19,7 +19,7 @@
 
 ```bash
 # 1. Clone and install
-git clone https://github.com/SheikhSarvar/pyrag-core
+git clone https://github.com/SheikhSarvar/pyrag-core.git
 cd pyrag-core
 pip install -e ".[dev]"
 
