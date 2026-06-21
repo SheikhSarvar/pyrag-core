@@ -1,0 +1,228 @@
+name: pyrag-core
+
+x-common-env: &common-env
+  ENVIRONMENT: ${ENVIRONMENT:-development}
+  DATABASE_URL: postgresql+asyncpg://pyrag:pyrag@postgres:5432/pyrag
+  REDIS_URL: redis://redis:6379/0
+  CELERY_BROKER_URL: redis://redis:6379/1
+  CELERY_RESULT_BACKEND: redis://redis:6379/2
+  MINIO_ENDPOINT: minio:9000
+  MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:-minioadmin}
+  MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:-minioadmin}
+  MINIO_USE_SSL: "false"
+  VECTOR_PROVIDER: ${VECTOR_PROVIDER:-qdrant}
+  QDRANT_URL: http://qdrant:6333
+  LANGFUSE_HOST: http://langfuse:3000
+  LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
+  LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
+  OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+  ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+  GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+  SECRET_KEY: ${SECRET_KEY:-dev-secret-change-in-prod-32chars}
+
+services:
+
+  # ── API ─────────────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      target: development
+    container_name: pyrag-api
+    ports:
+      - "8000:8000"
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/app          # hot-reload in dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 20s
+
+  # ── Celery Worker ────────────────────────────────────────────────────────────
+  celery_worker:
+    build:
+      context: .
+      target: development
+    container_name: pyrag-worker
+    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q ingestion,default
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+
+  # ── Celery Beat (scheduler) ──────────────────────────────────────────────────
+  celery_beat:
+    build:
+      context: .
+      target: development
+    container_name: pyrag-beat
+    command: celery -A app.worker.celery_app beat --loglevel=info
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/app
+    depends_on:
+      - redis
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+
+  # ── PostgreSQL ───────────────────────────────────────────────────────────────
+  postgres:
+    image: postgres:16-alpine
+    container_name: pyrag-postgres
+    environment:
+      POSTGRES_USER: pyrag
+      POSTGRES_PASSWORD: pyrag
+      POSTGRES_DB: pyrag
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U pyrag -d pyrag"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    container_name: pyrag-redis
+    command: redis-server --maxmemory 512mb --maxmemory-policy allkeys-lru
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Qdrant ───────────────────────────────────────────────────────────────────
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: pyrag-qdrant
+    ports:
+      - "6333:6333"   # REST
+      - "6334:6334"   # gRPC
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__HTTP_PORT: 6333
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 15s
+
+  # ── MinIO ────────────────────────────────────────────────────────────────────
+  minio:
+    image: minio/minio:latest
+    container_name: pyrag-minio
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:-minioadmin}
+    ports:
+      - "9000:9000"   # API
+      - "9001:9001"   # Console UI
+    volumes:
+      - minio_data:/data
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+    healthcheck:
+      test: ["CMD", "mc", "ready", "local"]
+      interval: 15s
+      timeout: 10s
+      retries: 5
+      start_period: 10s
+
+  # ── MinIO bucket init ────────────────────────────────────────────────────────
+  minio_init:
+    image: minio/mc:latest
+    container_name: pyrag-minio-init
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: >
+      /bin/sh -c "
+        mc alias set local http://minio:9000 ${MINIO_ACCESS_KEY:-minioadmin} ${MINIO_SECRET_KEY:-minioadmin};
+        mc mb --ignore-existing local/pyrag-raw;
+        mc mb --ignore-existing local/pyrag-processed;
+        echo 'Buckets ready';
+      "
+    networks:
+      - pyrag-net
+    restart: no
+
+  # ── Langfuse ─────────────────────────────────────────────────────────────────
+  langfuse:
+    image: langfuse/langfuse:latest
+    container_name: pyrag-langfuse
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgresql://pyrag:pyrag@postgres:5432/langfuse
+      NEXTAUTH_SECRET: ${SECRET_KEY:-dev-secret-change-in-prod-32chars}
+      NEXTAUTH_URL: http://localhost:3000
+      TELEMETRY_ENABLED: "false"
+      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+
+# ── Volumes ───────────────────────────────────────────────────────────────────
+volumes:
+  postgres_data:
+  redis_data:
+  qdrant_data:
+  minio_data:
+
+# ── Network ───────────────────────────────────────────────────────────────────
+networks:
+  pyrag-net:
+    driver: bridge

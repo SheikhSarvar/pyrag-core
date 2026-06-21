@@ -1,0 +1,50 @@
+name: pyrag-core
+
+# Production overrides — use with:
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+
+services:
+
+  api:
+    build:
+      target: production     # uses multi-stage prod image
+    volumes: []              # no source mount in prod
+    environment:
+      ENVIRONMENT: production
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+
+  celery_worker:
+    build:
+      target: production
+    volumes: []
+    command: celery -A app.worker.celery_app worker --loglevel=warning --concurrency=8 -Q ingestion,default
+    deploy:
+      replicas: 2
+      resources:
+        limits:
+          cpus: "4"
+          memory: 4G
+
+  celery_beat:
+    build:
+      target: production
+    volumes: []
+
+  postgres:
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set in production}
+    ports: []                # don't expose DB port externally in prod
+
+  redis:
+    ports: []
+
+  qdrant:
+    ports: []
+
+  minio:
+    ports: []

@@ -1,0 +1,49 @@
+# Git
+.git
+.gitignore
+
+# Python cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info
+dist
+build
+.eggs
+
+# Virtual environments
+.venv
+venv
+env
+
+# Dev / test artifacts
+.pytest_cache
+htmlcov
+.coverage
+.mypy_cache
+.ruff_cache
+
+# Environment files (never bake into image)
+.env
+.env.*
+!.env.example
+
+# IDE
+.vscode
+.idea
+
+# Docker files (not needed inside image)
+docker-compose*.yml
+Dockerfile*
+
+# Docs / scripts (optional — remove if you want them in image)
+docs
+scripts
+
+# Local data volumes
+postgres_data
+redis_data
+qdrant_data
+minio_data

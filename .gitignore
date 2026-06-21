@@ -1,0 +1,57 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.Python
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# Environment files
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+.DS_Store
+
+# Testing & coverage
+.pytest_cache/
+htmlcov/
+.coverage
+coverage.xml
+*.cover
+
+# Mypy
+.mypy_cache/
+
+# Ruff
+.ruff_cache/
+
+# Alembic
+# (keep migrations but ignore compiled)
+app/db/migrations/__pycache__/
+
+# Logs
+*.log
+logs/
+
+# Docker volumes (local dev)
+postgres_data/
+redis_data/
+qdrant_data/
+minio_data/
