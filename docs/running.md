@@ -15,9 +15,9 @@ Pick the path that matches your goal. Path A takes about 2 minutes. Path B takes
 | Requirement | Why | Check |
 |---|---|---|
 | Python 3.12+ | Project targets 3.12 explicitly (uses modern type syntax like `str \| None`) | `python3 --version` |
-| Docker + Docker Compose | Postgres, Redis, Qdrant, MinIO, Langfuse all run as containers | `docker --version` |
+| Docker + Docker Compose | Postgres, Redis, Qdrant, and MinIO run as containers; Langfuse uses Cloud if configured | `docker --version` |
 | pip | Package install | `pip --version` |
-| ~3GB free disk | Full `pip install -e ".[dev]"` pulls in `sentence-transformers` + `torch` for local reranking | `df -h` |
+| ~3GB free disk | `uv sync --extra dev` pulls in `sentence-transformers` + `torch` for local reranking | `df -h` |
 
 You do **not** need Docker for Path A. You do **not** need an LLM API key for Path A or for ingestion-only testing in Path B.
 
@@ -25,15 +25,13 @@ You do **not** need Docker for Path A. You do **not** need an LLM API key for Pa
 
 ## Path A — Unit tests only (no Docker, no API keys)
 
-This runs all 143 unit tests using SQLite in-memory and mocked external services. Nothing real is called.
+This runs the unit test suite using SQLite in-memory and mocked external services. Nothing real is called.
 
 ```bash
 cd pyrag-core
 
-# 1. Install the minimal test dependencies (lighter than the full project —
-#    skips torch/sentence-transformers/langgraph/langchain, which aren't
-#    needed since reranking/agent tests mock those calls)
-pip install -r requirements-test.txt
+# 1. Install the project dependencies.
+uv sync --extra dev
 
 # 2. Run the suite
 SECRET_KEY="dev-secret-key-32-characters-long" \
@@ -44,7 +42,7 @@ pytest tests/unit -v
 
 **Why those three env vars are required even though no real Postgres is touched:** `Settings` (`app/core/config.py`) validates `secret_key` has a minimum length and `database_url` is present at import time — these are dummy values satisfying that validation; `ENVIRONMENT=test` is what switches the DB engine to `NullPool`/SQLite-compatible mode for the test fixtures.
 
-**Expected output:** `143 passed` in a few seconds. If you see import errors, you're likely missing a package — re-run `pip install -r requirements-test.txt` and confirm it completed without errors.
+**Expected output:** all unit tests pass in a few seconds. If you see import errors, re-run `uv sync --extra dev` and confirm it completed without errors.
 
 To run a single test file instead of the whole suite:
 ```bash
@@ -80,7 +78,9 @@ Leave everything else at its default for local development. `SECRET_KEY` is pre-
 docker compose up -d
 ```
 
-This starts 9 containers: `api`, `celery_worker`, `celery_beat`, `postgres`, `redis`, `qdrant`, `minio`, `minio_init` (one-shot bucket creator), `langfuse`. First run pulls images and builds the app image — expect a few minutes.
+This starts 8 containers: `api`, `celery_worker`, `celery_beat`, `postgres`, `redis`, `qdrant`, `minio`, `minio_init` (one-shot bucket creator). First run pulls images and builds the app image — expect a few minutes.
+
+If you want Langfuse traces, set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` in `.env` to point at your Langfuse Cloud workspace.
 
 Check everything is healthy:
 ```bash
@@ -104,7 +104,7 @@ docker compose exec api alembic upgrade head
 
 or, if you have the project installed locally too:
 ```bash
-pip install -e ".[dev]"
+uv sync --extra dev
 make migrate
 ```
 
@@ -228,8 +228,8 @@ If all six steps above work, the full pipeline — upload, parse, chunk, embed, 
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| `pip install -e ".[dev]"` fails to find package | Using an old copy without the `[tool.hatch.build.targets.wheel]` fix | Confirm `pyproject.toml` has `packages = ["app"]` under that section |
-| `pytest` fails with `asyncpg` import error | Used `requirements-test.txt` without re-running pip after a partial install | `pip install asyncpg` directly, or re-run `pip install -r requirements-test.txt` |
+| `uv sync --extra dev` fails to find package | Using an old copy without the `[tool.hatch.build.targets.wheel]` fix | Confirm `pyproject.toml` has `packages = ["app"]` under that section |
+| `pytest` fails with `asyncpg` import error | Environment is missing project dependencies | Re-run `uv sync --extra dev` |
 | `api` container restarts in a loop | Migrations haven't been run, or a required env var is missing | `docker compose logs api`; run Step 3 above |
 | Upload succeeds but job stays `queued` forever | Celery worker isn't running or can't reach Redis | `docker compose ps` — confirm `celery_worker` is `running`; check `docker compose logs celery_worker` |
 | Job fails with an embedding error | No `OPENAI_API_KEY` (or your configured `EMBEDDING_PROVIDER`'s key) set | Add the key to `.env`, `docker compose restart celery_worker api` |
@@ -246,7 +246,7 @@ If all six steps above work, the full pipeline — upload, parse, chunk, embed, 
 # .env
 VECTOR_PROVIDER=pgvector   # or weaviate, milvus, elasticsearch
 ```
-For `weaviate`/`milvus`/`elasticsearch`, also install the matching extra: `pip install -e ".[weaviate]"` etc. `pgvector` needs no extra — it uses `asyncpg` directly, already a core dependency.
+For `weaviate`/`milvus`/`elasticsearch`, also install the matching extra with `uv sync --extra weaviate` etc. `pgvector` needs no extra — it uses `asyncpg` directly, already a core dependency.
 
 **Different embedding provider** (default: OpenAI):
 ```bash
@@ -255,7 +255,7 @@ EMBEDDING_PROVIDER=sentence-transformers   # local, no API key needed
 EMBEDDING_MODEL=all-MiniLM-L6-v2
 EMBEDDING_DIMENSIONS=384                    # must match the model's actual output dim
 ```
-Requires `sentence-transformers` installed (`pip install -e ".[dev]"` pulls it in already).
+Requires `sentence-transformers` installed (`uv sync --extra dev` pulls it in already).
 
 **Different LLM for chat** — either set the env var default, or override per-request:
 ```bash

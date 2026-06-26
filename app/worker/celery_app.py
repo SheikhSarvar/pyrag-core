@@ -1,6 +1,10 @@
+import asyncio
+
 from celery import Celery
+from celery.signals import worker_process_init
 
 from app.core.config import get_settings
+from app.db.session import engine
 
 settings = get_settings()
 
@@ -29,3 +33,12 @@ celery_app.conf.update(
     task_time_limit=600,        # 10 min hard limit
     result_expires=86400,       # results kept 24h
 )
+
+
+@worker_process_init.connect
+def _reset_async_db_pool(**kwargs: object) -> None:
+    """
+    Celery forks worker processes. Reset any inherited async DB connections so
+    each child starts with a clean pool bound to its own event loop.
+    """
+    asyncio.run(engine.dispose())

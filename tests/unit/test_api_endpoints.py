@@ -3,6 +3,7 @@ API endpoint tests — all services mocked, no real DB or LLM calls.
 """
 from __future__ import annotations
 
+from collections.abc import AsyncIterator
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -136,6 +137,94 @@ async def test_chat_returns_answer() -> None:
     assert data["answer"] == "Revenue grew 20%."
     assert data["provider"] == "openai"
     assert data["total_tokens"] == 65
+
+
+@pytest.mark.asyncio
+async def test_document_upload_queues_ingestion_task() -> None:
+    from app.api.v1.endpoints import documents as documents_endpoint
+
+    mock_dataset = MagicMock()
+    mock_dataset.chunk_strategy = "recursive"
+    mock_document = MagicMock()
+    mock_job = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    async def override_get_db() -> AsyncIterator[AsyncMock]:
+        yield mock_session
+
+    mock_minio = MagicMock()
+    mock_minio.upload_bytes = MagicMock(return_value="ds-1/doc-1/raw/report.txt")
+
+    mock_task_result = MagicMock(id="celery-task-1")
+    mock_task = MagicMock()
+    mock_task.apply_async = MagicMock(return_value=mock_task_result)
+
+    with patch.object(documents_endpoint, "DatasetRepository") as MockDatasetRepo, \
+         patch.object(documents_endpoint, "DocumentRepository") as MockDocumentRepo, \
+         patch.object(documents_endpoint, "JobRepository") as MockJobRepo, \
+         patch.object(documents_endpoint, "get_minio_client", return_value=mock_minio), \
+         patch("app.worker.tasks.ingestion.ingest_document", mock_task):
+        MockDatasetRepo.return_value.get_or_raise = AsyncMock(return_value=mock_dataset)
+        MockDocumentRepo.return_value.create = AsyncMock(return_value=mock_document)
+        MockDocumentRepo.return_value.set_status = AsyncMock()
+        MockJobRepo.return_value.create = AsyncMock(return_value=mock_job)
+        MockJobRepo.return_value.mark_started = AsyncMock()
+        MockJobRepo.return_value.mark_failed = AsyncMock()
+
+        app.dependency_overrides[documents_endpoint.get_db] = override_get_db
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/documents/upload",
+                    data={"dataset_id": "ds-1"},
+                    files={"file": ("../../report.txt", b"hello world", "text/plain")},
+                )
+        finally:
+            app.dependency_overrides.pop(documents_endpoint.get_db, None)
+
+    assert resp.status_code == 202
+    data = resp.json()
+    assert data["dataset_id"] == "ds-1"
+    assert data["filename"] == "report.txt"
+    assert data["status"] == "pending"
+    assert mock_minio.upload_bytes.call_count == 1
+    assert mock_task.apply_async.call_count == 1
+    assert mock_session.commit.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_agents_chat_returns_answer() -> None:
+    mock_result = {
+        "answer": "The answer is 42.",
+        "steps": [
+            {"step": 0, "tool": "search_ds-1", "input": "question", "output": "[]"},
+        ],
+        "sources": [
+            {"chunk_id": "chunk-1", "score": 0.98, "text": "Relevant text", "filename": "report.txt"},
+        ],
+        "model": "gpt-4o-mini",
+        "total_tokens": 12,
+        "cost_usd": 0.00012,
+    }
+
+    with patch("app.api.v1.endpoints.agents.run_agent", AsyncMock(return_value=mock_result)), \
+         patch("app.api.v1.endpoints.agents.AnalyticsRepository") as mock_repo:
+        mock_repo.return_value.create = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post(
+                "/api/v1/agents/chat",
+                json={
+                    "dataset_id": "ds-1",
+                    "message": "What is the answer?",
+                },
+            )
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["answer"] == "The answer is 42."
+    assert data["model"] == "gpt-4o-mini"
+    assert data["total_tokens"] == 12
 
 
 # ── Analytics ─────────────────────────────────────────────────────────────────

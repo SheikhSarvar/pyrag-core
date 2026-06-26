@@ -28,6 +28,7 @@ class PDFParser:
         import fitz  # pymupdf
 
         doc = fitz.open(stream=data, filetype="pdf")
+        page_count = doc.page_count
         pages_text: list[str] = []
         for page in doc:
             pages_text.append(page.get_text("text"))
@@ -36,11 +37,11 @@ class PDFParser:
             "title": doc.metadata.get("title", ""),
             "author": doc.metadata.get("author", ""),
             "subject": doc.metadata.get("subject", ""),
-            "pages": doc.page_count,
+            "pages": page_count,
             "filename": filename,
         }
         doc.close()
-        return ParsedDocument(text=text, metadata=metadata, pages=doc.page_count)
+        return ParsedDocument(text=text, metadata=metadata, pages=page_count)
 
 
 # ── DOCX ──────────────────────────────────────────────────────────────────────
@@ -96,6 +97,7 @@ class XLSXParser:
         import openpyxl
 
         wb = openpyxl.load_workbook(io.BytesIO(data), read_only=True, data_only=True)
+        sheet_count = len(wb.sheetnames)
         sheets_text: list[str] = []
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
@@ -108,7 +110,7 @@ class XLSXParser:
         wb.close()
         return ParsedDocument(
             text="\n\n".join(sheets_text),
-            metadata={"filename": filename, "sheets": len(wb.sheetnames)},
+            metadata={"filename": filename, "sheets": sheet_count},
         )
 
 

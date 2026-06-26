@@ -67,8 +67,7 @@ Before going to production, verify:
 - [ ] `CORS_ORIGINS` is an explicit list, never `*`
 - [ ] `API_KEYS` env var is set with rotated, randomly generated keys
 - [ ] `ENVIRONMENT=production` (disables `/docs`, `/redoc`, `/openapi.json`)
-- [ ] Postgres, Redis, Qdrant, MinIO ports are NOT exposed externally
-      (see `docker-compose.prod.yml` — ports are stripped for these services)
+- [ ] Postgres, Redis, Qdrant, MinIO ports are NOT exposed externally in your deployment environment
 - [ ] TLS certificates are valid and auto-renewing (Let's Encrypt / ACM)
 - [ ] Rate limiting is enabled (`RATE_LIMIT_PER_MINUTE` tuned for your traffic)
 - [ ] Langfuse keys configured for observability
@@ -80,14 +79,13 @@ Before going to production, verify:
 ## Running in production
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+docker compose up -d
 ```
 
 This applies:
-- Production Docker image target (non-root user, no source mount)
-- 2 API replicas + 2 Celery worker replicas
-- Closed ports on internal services
-- Resource limits (2 CPU / 2GB per API replica)
+- The single compose file starts the full stack.
+- In production, set `ENVIRONMENT=production` and provide production values for secrets and provider keys.
+- Add a reverse proxy or orchestrator layer if you need stricter hardening, scaling, or port isolation.
 
 ## Performance validation — T58
 
