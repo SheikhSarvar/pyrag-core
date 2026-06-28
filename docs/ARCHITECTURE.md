@@ -304,7 +304,7 @@ None of these block local development or testing — the 143 unit tests cover in
 
 ```bash
 # Unit tests only - no Docker required
-pip install -r requirements-test.txt
+uv sync --extra dev
 SECRET_KEY="dev-secret-key-32-characters-long" \
 DATABASE_URL="postgresql+asyncpg://u:p@localhost/db" \
 ENVIRONMENT="test" \
@@ -313,7 +313,7 @@ pytest tests/unit -v
 # Full stack
 cp .env.example .env          # fill in at least one LLM provider key
 docker compose up -d
-pip install -e ".[dev]"
+uv sync --extra dev
 make migrate
 make dev                      # http://localhost:8000/docs
 ```

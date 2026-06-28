@@ -10,6 +10,11 @@ dist/
 build/
 .eggs/
 .Python
+.uv-cache/
+.agents/
+alembic.ini
+celerybeat-schedule
+
 
 # Virtual environments
 .venv/

@@ -4,6 +4,9 @@ No real files, vector store, or Celery needed — everything is mocked or in-mem
 """
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+
 import pytest
 
 from app.services.ingestion.cleaner import clean_text, extract_metadata_hints
@@ -100,6 +103,35 @@ def test_get_parser_raises_for_unsupported() -> None:
 def test_parse_document_dispatches_by_extension() -> None:
     result = parse_document(b"# Heading\n\nSome content", "notes.md")
     assert "Heading" in result.text
+
+
+def test_pdf_parser_does_not_access_closed_document(monkeypatch: pytest.MonkeyPatch) -> None:
+    from app.services.ingestion.parsers import PDFParser
+
+    class FakePage:
+        def get_text(self, mode: str) -> str:
+            assert mode == "text"
+            return "PDF page text"
+
+    class FakeDoc:
+        def __init__(self) -> None:
+            self.metadata = {"title": "Report", "author": "Alice", "subject": "Test"}
+            self.page_count = 3
+            self.closed = False
+
+        def __iter__(self):
+            return iter([FakePage(), FakePage(), FakePage()])
+
+        def close(self) -> None:
+            self.closed = True
+
+    fake_fitz = SimpleNamespace(open=lambda *args, **kwargs: FakeDoc())
+    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
+
+    result = PDFParser().parse(b"%PDF-1.4 fake", "report.pdf")
+    assert result.pages == 3
+    assert result.metadata["pages"] == 3
+    assert "PDF page text" in result.text
 
 
 # ── Chunkers ──────────────────────────────────────────────────────────────────

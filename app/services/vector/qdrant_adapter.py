@@ -159,14 +159,25 @@ class QdrantAdapter(VectorStore):
                         for k, v in query.filters.items()
                     ]
                 )
-            results = await self._client.search(
-                collection_name=collection_name,
-                query_vector=query.vector,
-                limit=query.top_k,
-                query_filter=qdrant_filter,
-                score_threshold=query.score_threshold,
-                with_payload=True,
-            )
+            if hasattr(self._client, "search"):
+                results = await self._client.search(
+                    collection_name=collection_name,
+                    query_vector=query.vector,
+                    limit=query.top_k,
+                    query_filter=qdrant_filter,
+                    score_threshold=query.score_threshold,
+                    with_payload=True,
+                )
+            else:
+                results = await self._client.query_points(
+                    collection_name=collection_name,
+                    query=query.vector,
+                    query_filter=qdrant_filter,
+                    limit=query.top_k,
+                    score_threshold=query.score_threshold,
+                    with_payload=True,
+                )
+                results = getattr(results, "points", results)
             return [
                 SearchResult(id=str(r.id), score=r.score, payload=r.payload or {})
                 for r in results

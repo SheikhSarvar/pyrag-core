@@ -12,7 +12,7 @@ x-common-env: &common-env
   MINIO_USE_SSL: "false"
   VECTOR_PROVIDER: ${VECTOR_PROVIDER:-qdrant}
   QDRANT_URL: http://qdrant:6333
-  LANGFUSE_HOST: http://langfuse:3000
+  LANGFUSE_HOST: ${LANGFUSE_HOST:-https://cloud.langfuse.com}
   LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-}
   LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-}
   OPENAI_API_KEY: ${OPENAI_API_KEY:-}
@@ -40,7 +40,7 @@ services:
       redis:
         condition: service_healthy
       qdrant:
-        condition: service_healthy
+        condition: service_started
       minio:
         condition: service_healthy
     restart: unless-stopped
@@ -148,12 +148,6 @@ services:
     restart: unless-stopped
     networks:
       - pyrag-net
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:6333/healthz"]
-      interval: 15s
-      timeout: 10s
-      retries: 5
-      start_period: 15s
 
   # ── MinIO ────────────────────────────────────────────────────────────────────
   minio:
@@ -195,25 +189,6 @@ services:
     networks:
       - pyrag-net
     restart: no
-
-  # ── Langfuse ─────────────────────────────────────────────────────────────────
-  langfuse:
-    image: langfuse/langfuse:latest
-    container_name: pyrag-langfuse
-    ports:
-      - "3000:3000"
-    environment:
-      DATABASE_URL: postgresql://pyrag:pyrag@postgres:5432/langfuse
-      NEXTAUTH_SECRET: ${SECRET_KEY:-dev-secret-change-in-prod-32chars}
-      NEXTAUTH_URL: http://localhost:3000
-      TELEMETRY_ENABLED: "false"
-      LANGFUSE_ENABLE_EXPERIMENTAL_FEATURES: "false"
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-    networks:
-      - pyrag-net
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:

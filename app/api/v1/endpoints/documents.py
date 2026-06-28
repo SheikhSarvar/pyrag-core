@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import get_settings
 from app.core.exceptions import FileTooLargeError, NotFoundError, UnsupportedFileTypeError
 from app.core.logging import get_logger
+from app.core.validation import sanitize_filename
 from app.db.session import get_db
 from app.db.repositories import DatasetRepository, DocumentRepository, JobRepository
 from app.schemas.document import (
@@ -57,7 +58,7 @@ async def upload_document(
         )
 
     # Validate file type
-    filename = file.filename or "unknown"
+    filename = sanitize_filename(file.filename or "upload.bin")
     ext = Path(filename).suffix.lstrip(".").lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise UnsupportedFileTypeError(f"File type '.{ext}' is not supported")
@@ -80,7 +81,7 @@ async def upload_document(
     doc_repo = DocumentRepository(session)
     job_repo = JobRepository(session)
 
-    doc = await doc_repo.create(
+    await doc_repo.create(
         id=document_id,
         dataset_id=dataset_id,
         name=filename,
@@ -91,7 +92,7 @@ async def upload_document(
         status="pending",
     )
 
-    job = await job_repo.create(
+    await job_repo.create(
         id=job_id,
         job_type="ingest",
         dataset_id=dataset_id,
@@ -104,21 +105,34 @@ async def upload_document(
         },
     )
 
+    # Persist the records before handing work to Celery so the worker can read
+    # them immediately even if the task starts before the request finishes.
+    await session.commit()
+
     # Dispatch Celery task
     from app.worker.tasks.ingestion import ingest_document
-    task = ingest_document.apply_async(
-        kwargs={
-            "dataset_id": dataset_id,
-            "document_id": document_id,
-            "filename": filename,
-            "file_size": len(file_data),
-            "storage_path": storage_path,
-            "chunk_strategy": dataset.chunk_strategy,
-            "job_id": job_id,
-        },
-        task_id=job_id,
-    )
+
+    try:
+        task = ingest_document.apply_async(
+            kwargs={
+                "dataset_id": dataset_id,
+                "document_id": document_id,
+                "filename": filename,
+                "file_size": len(file_data),
+                "storage_path": storage_path,
+                "chunk_strategy": dataset.chunk_strategy,
+                "job_id": job_id,
+            },
+            task_id=job_id,
+        )
+    except Exception as exc:
+        await doc_repo.set_status(document_id, "failed", error_message=str(exc))
+        await job_repo.mark_failed(job_id, error_message=str(exc))
+        await session.commit()
+        raise
+
     await job_repo.mark_started(job_id, celery_task_id=task.id)
+    await session.commit()
 
     logger.info("Document upload queued", document_id=document_id, job_id=job_id)
 

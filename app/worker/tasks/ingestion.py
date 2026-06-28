@@ -49,28 +49,34 @@ def ingest_document(
     )
 
     async def _run() -> dict:
-        from app.db.session import AsyncSessionLocal
+        from app.db.session import AsyncSessionLocal, engine
         from app.services.ingestion.pipeline import run_ingestion_pipeline
 
-        async with AsyncSessionLocal() as session:
-            result = await run_ingestion_pipeline(
-                session=session,
-                dataset_id=dataset_id,
-                document_id=document_id,
-                filename=filename,
-                file_size=file_size,
-                storage_path=storage_path,
-                chunk_strategy=chunk_strategy,
-                source_url=source_url,
-                job_id=job_id,
-            )
-            await session.commit()
-            return {
-                "success": result.success,
-                "chunks_indexed": result.chunks_indexed,
-                "error": result.error,
-                "document_id": result.document_id,
-            }
+        try:
+            async with AsyncSessionLocal() as session:
+                result = await run_ingestion_pipeline(
+                    session=session,
+                    dataset_id=dataset_id,
+                    document_id=document_id,
+                    filename=filename,
+                    file_size=file_size,
+                    storage_path=storage_path,
+                    chunk_strategy=chunk_strategy,
+                    source_url=source_url,
+                    job_id=job_id,
+                )
+                await session.commit()
+                return {
+                    "success": result.success,
+                    "chunks_indexed": result.chunks_indexed,
+                    "error": result.error,
+                    "document_id": result.document_id,
+                }
+        finally:
+            # Asyncpg connections are bound to the event loop that created them.
+            # Disposing the engine after each Celery task prevents loop-mismatch
+            # errors when the next task runs under a fresh asyncio.run() loop.
+            await engine.dispose()
 
     try:
         return asyncio.run(_run())
@@ -96,7 +102,7 @@ def ingest_url(
     """Celery task: scrape a URL and ingest as a document."""
 
     async def _run() -> dict:
-        from app.db.session import AsyncSessionLocal
+        from app.db.session import AsyncSessionLocal, engine
         from app.db.repositories import DocumentRepository
         from app.services.ingestion.parsers import WebScraper
         from app.services.ingestion.cleaner import clean_text
@@ -106,42 +112,45 @@ def ingest_url(
         from app.services.embedding.providers import get_embedding_provider
         from app.services.vector.factory import get_vector_store
 
-        async with AsyncSessionLocal() as session:
-            doc_repo = DocumentRepository(session)
-            try:
-                await doc_repo.set_status(document_id, "processing")
+        try:
+            async with AsyncSessionLocal() as session:
+                doc_repo = DocumentRepository(session)
+                try:
+                    await doc_repo.set_status(document_id, "processing")
 
-                scraper = WebScraper()
-                parsed = scraper.scrape(url)
-                cleaned = clean_text(parsed.text)
+                    scraper = WebScraper()
+                    parsed = scraper.scrape(url)
+                    cleaned = clean_text(parsed.text)
 
-                doc_metadata = extract_metadata(
-                    filename=url,
-                    file_size=len(cleaned.encode()),
-                    parser_metadata=parsed.metadata,
-                    cleaned_text=cleaned,
-                    source_url=url,
-                )
-                chunker = get_chunker("recursive")
-                chunks = chunker.chunk(cleaned)
+                    doc_metadata = extract_metadata(
+                        filename=url,
+                        file_size=len(cleaned.encode()),
+                        parser_metadata=parsed.metadata,
+                        cleaned_text=cleaned,
+                        source_url=url,
+                    )
+                    chunker = get_chunker("recursive")
+                    chunks = chunker.chunk(cleaned)
 
-                total = await index_chunks(
-                    session=session,
-                    vector_store=get_vector_store(),
-                    embedder=get_embedding_provider(),
-                    dataset_id=dataset_id,
-                    document_id=document_id,
-                    doc_metadata=doc_metadata,
-                    chunks=chunks,
-                )
-                await doc_repo.set_status(document_id, "indexed")
-                await session.commit()
-                return {"success": True, "chunks_indexed": total, "document_id": document_id}
+                    total = await index_chunks(
+                        session=session,
+                        vector_store=get_vector_store(),
+                        embedder=get_embedding_provider(),
+                        dataset_id=dataset_id,
+                        document_id=document_id,
+                        doc_metadata=doc_metadata,
+                        chunks=chunks,
+                    )
+                    await doc_repo.set_status(document_id, "indexed")
+                    await session.commit()
+                    return {"success": True, "chunks_indexed": total, "document_id": document_id}
 
-            except Exception as exc:
-                await doc_repo.set_status(document_id, "failed", error_message=str(exc))
-                await session.commit()
-                raise
+                except Exception as exc:
+                    await doc_repo.set_status(document_id, "failed", error_message=str(exc))
+                    await session.commit()
+                    raise
+        finally:
+            await engine.dispose()
 
     try:
         return asyncio.run(_run())

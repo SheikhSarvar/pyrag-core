@@ -21,7 +21,7 @@
 # 1. Clone and install
 git clone https://github.com/SheikhSarvar/pyrag-core.git
 cd pyrag-core
-pip install -e ".[dev]"
+uv sync --extra dev
 
 # 2. Configure
 cp .env.example .env
@@ -66,10 +66,12 @@ pyrag-core/
 │   └── integration/
 ├── scripts/                  # One-off ops scripts
 ├── docs/
-├── docker-compose.yml
+├── docker-compose.yml          # Single compose file for local and deployment
 ├── Dockerfile
 └── pyproject.toml
 ```
+
+`docker-compose.yml` is the single compose file for the project. Use it for local development and deployment, and control runtime differences with environment variables such as `ENVIRONMENT`, `SECRET_KEY`, `API_KEYS`, `LANGFUSE_HOST`, and provider keys.
 
 ## Commands
 
