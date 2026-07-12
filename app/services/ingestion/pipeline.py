@@ -44,6 +44,7 @@ async def run_ingestion_pipeline(
     chunk_strategy: str = "recursive",
     source_url: str | None = None,
     job_id: str | None = None,
+    reindex: bool = False,
     # Injectable for testing
     minio_client: MinIOClient | None = None,
     vector_store: VectorStore | None = None,
@@ -61,29 +62,78 @@ async def run_ingestion_pipeline(
         await doc_repo.set_status(document_id, "processing")
         await _update_progress(5)
 
-        # ── Step 1: Download from MinIO ───────────────────────────────────────
+        # ── Step 1: Download ──────────────────────────────────────────────────
         client = minio_client or get_minio_client()
         from app.core.config import get_settings
         settings = get_settings()
-        raw_data = client.download_bytes(settings.minio_bucket_raw, storage_path)
-        logger.info("Downloaded document", document_id=document_id, size=len(raw_data))
-        await _update_progress(15)
 
-        # ── Step 2: Parse ─────────────────────────────────────────────────────
-        parsed = parse_document(raw_data, filename)
-        await _update_progress(30)
+        # On reindex: short-circuit the expensive raw-download + parse by
+        # reading previously extracted text from the processed bucket.
+        cleaned: str | None = None
+        parsed_metadata: dict = {}
+        if reindex:
+            processed_key = MinIOClient.processed_path(dataset_id, document_id, "extracted.txt")
+            if client.object_exists(settings.minio_bucket_processed, processed_key):
+                try:
+                    cleaned = client.download_bytes(
+                        settings.minio_bucket_processed, processed_key
+                    ).decode("utf-8")
+                    logger.info(
+                        "Reindex: loaded extracted text from processed bucket — skipping raw parse",
+                        document_id=document_id,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "Reindex: failed to read processed text, falling back to raw parse",
+                        document_id=document_id,
+                        error=str(exc),
+                    )
+                    cleaned = None
 
-        # ── Step 3: Clean ─────────────────────────────────────────────────────
-        cleaned = clean_text(parsed.text)
-        if not cleaned:
-            raise ValueError("Document produced no extractable text after cleaning")
+        if cleaned is None:
+            # Full path: download raw file and parse it
+            raw_data = client.download_bytes(settings.minio_bucket_raw, storage_path)
+            logger.info("Downloaded document", document_id=document_id, size=len(raw_data))
+            await _update_progress(15)
+
+            # ── Step 2: Parse ─────────────────────────────────────────────────
+            parsed = parse_document(raw_data, filename)
+            parsed_metadata = parsed.metadata
+            await _update_progress(30)
+
+            # ── Step 3: Clean ─────────────────────────────────────────────────
+            cleaned = clean_text(parsed.text)
+            if not cleaned:
+                raise ValueError("Document produced no extractable text after cleaning")
+
+            # Persist extracted text so future reindex flows skip raw re-parse.
+            try:
+                processed_key = MinIOClient.processed_path(dataset_id, document_id, "extracted.txt")
+                client.upload_bytes(
+                    bucket=settings.minio_bucket_processed,
+                    object_name=processed_key,
+                    data=cleaned.encode("utf-8"),
+                    content_type="text/plain; charset=utf-8",
+                    metadata={"dataset_id": dataset_id, "document_id": document_id},
+                )
+                logger.info("Saved extracted text", document_id=document_id, object=processed_key)
+            except Exception as exc:
+                logger.warning(
+                    "Failed to save extracted text",
+                    document_id=document_id,
+                    error=str(exc),
+                )
+        else:
+            # Came from processed bucket — skip steps 1-3 progress markers
+            await _update_progress(30)
+
         await _update_progress(40)
 
         # ── Step 4: Extract metadata ──────────────────────────────────────────
         doc_metadata = extract_metadata(
             filename=filename,
             file_size=file_size,
-            parser_metadata=parsed.metadata,
+            parser_metadata=parsed_metadata,
             cleaned_text=cleaned,
             source_url=source_url,
         )

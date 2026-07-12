@@ -2,6 +2,8 @@ import io
 from functools import lru_cache
 from typing import BinaryIO
 
+import urllib3
+
 from minio import Minio
 from minio.deleteobjects import DeleteObject
 from minio.error import S3Error
@@ -171,10 +173,22 @@ class MinIOClient:
 @lru_cache
 def get_minio_client() -> MinIOClient:
     settings = get_settings()
+    # Configure a connection pool so concurrent Celery workers don't exhaust
+    # the default single-connection urllib3 pool.
+    http_client = urllib3.PoolManager(
+        maxsize=getattr(settings, "minio_pool_size", 20),
+        timeout=urllib3.Timeout(connect=5.0, read=30.0),
+        retries=urllib3.Retry(
+            total=3,
+            backoff_factor=0.5,
+            status_forcelist=[500, 502, 503, 504],
+        ),
+    )
     client = Minio(
         endpoint=settings.minio_endpoint,
         access_key=settings.minio_access_key,
         secret_key=settings.minio_secret_key,
         secure=settings.minio_use_ssl,
+        http_client=http_client,
     )
     return MinIOClient(client)
