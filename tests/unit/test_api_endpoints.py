@@ -305,6 +305,28 @@ async def test_analytics_summary() -> None:
 
 
 @pytest.mark.asyncio
+async def test_analytics_summary_alias() -> None:
+    with patch("app.api.v1.endpoints.analytics.AnalyticsRepository") as MockRepo:
+        instance = MockRepo.return_value
+        instance.count = AsyncMock(return_value=42)
+        instance.total_tokens = AsyncMock(return_value=100000)
+        instance.total_cost = AsyncMock(return_value=0.125)
+        instance.avg_latency_ms = AsyncMock(return_value=450.5)
+        instance.requests_by_type = AsyncMock(return_value=[{"request_type": "chat", "count": 30}])
+        instance.cost_by_provider = AsyncMock(return_value=[{"provider": "openai", "total_cost": 0.12}])
+
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.get("/api/v1/analytics/summary")
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_requests"] == 42
+    assert data["total_tokens"] == 100000
+    assert data["total_cost_usd"] == 0.125
+    assert data["avg_latency_ms"] == 450.5
+
+
+@pytest.mark.asyncio
 async def test_analytics_cost() -> None:
     with patch("app.api.v1.endpoints.analytics.AnalyticsRepository") as MockRepo:
         instance = MockRepo.return_value

@@ -1,6 +1,7 @@
 """
-Analytics API — T43.
+Analytics API - T43.
 GET /api/v1/analytics
+GET /api/v1/analytics/summary
 GET /api/v1/analytics/cost
 GET /api/v1/analytics/tokens
 """
@@ -13,9 +14,9 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.session import get_db
 from app.db.models.analytics import Analytics
 from app.db.repositories import AnalyticsRepository
+from app.db.session import get_db
 from app.schemas.search import AnalyticsSummary, CostBreakdown, TokenUsage
 
 router = APIRouter()
@@ -26,18 +27,18 @@ def _parse_since(period: str | None) -> datetime | None:
     if not period:
         return None
     from datetime import timedelta
+
     now = datetime.now(timezone.utc)
     periods = {"24h": timedelta(hours=24), "7d": timedelta(days=7), "30d": timedelta(days=30)}
     delta = periods.get(period)
     return (now - delta) if delta else None
 
 
-@router.get("", response_model=AnalyticsSummary)
-async def get_analytics(
+async def _build_summary(
     period: Literal["24h", "7d", "30d"] | None = Query(default=None),
     session: AsyncSession = Depends(get_db),
 ) -> AnalyticsSummary:
-    """Overall usage summary — requests, tokens, cost, latency."""
+    """Overall usage summary - requests, tokens, cost, latency."""
     repo = AnalyticsRepository(session)
     since = _parse_since(period)
 
@@ -58,6 +59,22 @@ async def get_analytics(
     )
 
 
+@router.get("", response_model=AnalyticsSummary)
+async def get_analytics(
+    period: Literal["24h", "7d", "30d"] | None = Query(default=None),
+    session: AsyncSession = Depends(get_db),
+) -> AnalyticsSummary:
+    return await _build_summary(period=period, session=session)
+
+
+@router.get("/summary", response_model=AnalyticsSummary)
+async def get_analytics_summary(
+    period: Literal["24h", "7d", "30d"] | None = Query(default=None),
+    session: AsyncSession = Depends(get_db),
+) -> AnalyticsSummary:
+    return await _build_summary(period=period, session=session)
+
+
 @router.get("/cost", response_model=CostBreakdown)
 async def get_cost(
     period: Literal["24h", "7d", "30d"] | None = Query(default=None),
@@ -70,7 +87,6 @@ async def get_cost(
     total_cost = await repo.total_cost(since=since)
     by_provider = await repo.cost_by_provider(since=since)
 
-    # Cost by model
     stmt = select(
         Analytics.model,
         func.sum(Analytics.cost_usd).label("total_cost"),
@@ -104,7 +120,6 @@ async def get_tokens(
     total_tokens = await repo.total_tokens(since=since)
     by_type = await repo.requests_by_type(since=since)
 
-    # Prompt vs completion tokens
     stmt = select(
         func.coalesce(func.sum(Analytics.prompt_tokens), 0).label("prompt"),
         func.coalesce(func.sum(Analytics.completion_tokens), 0).label("completion"),
