@@ -38,6 +38,7 @@ def ingest_document(
     chunk_strategy: str = "recursive",
     source_url: str | None = None,
     job_id: str | None = None,
+    reindex: bool = False,
 ) -> dict:
     """
     Celery task: run the full ingestion pipeline for one document.
@@ -51,9 +52,11 @@ def ingest_document(
     async def _run() -> dict:
         from app.db.session import AsyncSessionLocal, engine
         from app.services.ingestion.pipeline import run_ingestion_pipeline
+        from app.services.vector.factory import create_vector_store
 
         try:
             async with AsyncSessionLocal() as session:
+                vector_store = create_vector_store()
                 result = await run_ingestion_pipeline(
                     session=session,
                     dataset_id=dataset_id,
@@ -64,6 +67,8 @@ def ingest_document(
                     chunk_strategy=chunk_strategy,
                     source_url=source_url,
                     job_id=job_id,
+                    reindex=reindex,
+                    vector_store=vector_store,
                 )
                 await session.commit()
                 return {
@@ -110,7 +115,7 @@ def ingest_url(
         from app.services.ingestion.chunkers import get_chunker
         from app.services.ingestion.indexer import index_chunks
         from app.services.embedding.providers import get_embedding_provider
-        from app.services.vector.factory import get_vector_store
+        from app.services.vector.factory import create_vector_store
 
         try:
             async with AsyncSessionLocal() as session:
@@ -132,9 +137,31 @@ def ingest_url(
                     chunker = get_chunker("recursive")
                     chunks = chunker.chunk(cleaned)
 
+                    # Persist extracted text to processed bucket for consistency
+                    # with the file pipeline — enables future reindex without re-scraping.
+                    try:
+                        from app.services.storage.minio_client import MinIOClient, get_minio_client
+                        from app.core.config import get_settings as _gs
+                        _settings = _gs()
+                        processed_key = MinIOClient.processed_path(
+                            dataset_id, document_id, "extracted.txt"
+                        )
+                        get_minio_client().upload_bytes(
+                            bucket=_settings.minio_bucket_processed,
+                            object_name=processed_key,
+                            data=cleaned.encode("utf-8"),
+                            content_type="text/plain; charset=utf-8",
+                            metadata={"dataset_id": dataset_id, "document_id": document_id},
+                        )
+                    except Exception as _exc:
+                        import logging as _logging
+                        _logging.getLogger(__name__).warning(
+                            "ingest_url: failed to save processed text: %s", _exc
+                        )
+
                     total = await index_chunks(
                         session=session,
-                        vector_store=get_vector_store(),
+                        vector_store=create_vector_store(),
                         embedder=get_embedding_provider(),
                         dataset_id=dataset_id,
                         document_id=document_id,

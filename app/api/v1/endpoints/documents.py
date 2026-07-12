@@ -8,6 +8,7 @@ GET    /documents/{id}/status
 """
 from __future__ import annotations
 
+import io
 import uuid
 from pathlib import Path
 
@@ -50,18 +51,25 @@ async def upload_document(
     ds_repo = DatasetRepository(session)
     dataset = await ds_repo.get_or_raise(dataset_id)
 
-    # Validate file size
-    file_data = await file.read()
-    if len(file_data) > settings.max_upload_size_bytes:
-        raise FileTooLargeError(
-            f"File exceeds {settings.max_upload_size_mb}MB limit"
-        )
-
     # Validate file type
     filename = sanitize_filename(file.filename or "upload.bin")
     ext = Path(filename).suffix.lstrip(".").lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise UnsupportedFileTypeError(f"File type '.{ext}' is not supported")
+
+    # Validate file size (avoid buffering large uploads in memory)
+    file_size: int
+    file_data: bytes | None = None
+    try:
+        file.file.seek(0, io.SEEK_END)
+        file_size = int(file.file.tell())
+        file.file.seek(0)
+    except Exception:
+        file_data = await file.read()
+        file_size = len(file_data)
+
+    if file_size > settings.max_upload_size_bytes:
+        raise FileTooLargeError(f"File exceeds {settings.max_upload_size_mb}MB limit")
 
     # Generate IDs
     document_id = str(uuid.uuid4())
@@ -69,13 +77,24 @@ async def upload_document(
     storage_path = MinIOClient.raw_path(dataset_id, document_id, filename)
 
     # Upload to MinIO
-    minio.upload_bytes(
-        bucket=settings.minio_bucket_raw,
-        object_name=storage_path,
-        data=file_data,
-        content_type=file.content_type or "application/octet-stream",
-        metadata={"dataset_id": dataset_id, "document_id": document_id},
-    )
+    if file_data is not None:
+        minio.upload_bytes(
+            bucket=settings.minio_bucket_raw,
+            object_name=storage_path,
+            data=file_data,
+            content_type=file.content_type or "application/octet-stream",
+            metadata={"dataset_id": dataset_id, "document_id": document_id},
+        )
+    else:
+        file.file.seek(0)
+        minio.upload_file(
+            bucket=settings.minio_bucket_raw,
+            object_name=storage_path,
+            data=file.file,
+            length=file_size,
+            content_type=file.content_type or "application/octet-stream",
+            metadata={"dataset_id": dataset_id, "document_id": document_id},
+        )
 
     # Create DB records
     doc_repo = DocumentRepository(session)
@@ -87,7 +106,7 @@ async def upload_document(
         name=filename,
         original_name=filename,
         file_type=ext,
-        file_size=len(file_data),
+        file_size=file_size,
         storage_path=storage_path,
         status="pending",
     )
@@ -99,7 +118,7 @@ async def upload_document(
         document_id=document_id,
         payload={
             "filename": filename,
-            "file_size": len(file_data),
+            "file_size": file_size,
             "storage_path": storage_path,
             "chunk_strategy": dataset.chunk_strategy,
         },
@@ -118,7 +137,7 @@ async def upload_document(
                 "dataset_id": dataset_id,
                 "document_id": document_id,
                 "filename": filename,
-                "file_size": len(file_data),
+                "file_size": file_size,
                 "storage_path": storage_path,
                 "chunk_strategy": dataset.chunk_strategy,
                 "job_id": job_id,
@@ -141,7 +160,7 @@ async def upload_document(
         job_id=job_id,
         dataset_id=dataset_id,
         filename=filename,
-        file_size=len(file_data),
+        file_size=file_size,  # file_data may be None on the streaming path
         status="pending",
         message="Document uploaded and queued for ingestion",
     )
@@ -220,14 +239,20 @@ async def reindex_documents(
     job_repo = JobRepository(session)
     queued = []
 
+    # Cache dataset lookups to avoid one DB query per document when many
+    # documents in the batch share the same dataset.
+    from app.db.repositories import DatasetRepository
+    ds_repo = DatasetRepository(session)
+    _dataset_cache: dict[str, object] = {}
+
     for doc_id in body.document_ids:
         doc = await doc_repo.get(doc_id)
         if doc is None:
             continue
 
-        from app.db.repositories import DatasetRepository
-        ds_repo = DatasetRepository(session)
-        dataset = await ds_repo.get(doc.dataset_id)
+        if doc.dataset_id not in _dataset_cache:
+            _dataset_cache[doc.dataset_id] = await ds_repo.get(doc.dataset_id)
+        dataset = _dataset_cache[doc.dataset_id]
         chunk_strategy = dataset.chunk_strategy if dataset else "recursive"
 
         job_id = str(uuid.uuid4())
@@ -238,6 +263,7 @@ async def reindex_documents(
             document_id=doc_id,
             payload={"storage_path": doc.storage_path, "chunk_strategy": chunk_strategy},
         )
+        await session.commit()
 
         from app.worker.tasks.ingestion import ingest_document
         task = ingest_document.apply_async(
@@ -249,10 +275,12 @@ async def reindex_documents(
                 "storage_path": doc.storage_path or "",
                 "chunk_strategy": chunk_strategy,
                 "job_id": job_id,
+                "reindex": True,  # signals pipeline to skip raw parse if processed text exists
             },
             task_id=job_id,
         )
         await job_repo.mark_started(job_id, celery_task_id=task.id)
+        await session.commit()
         queued.append({"document_id": doc_id, "job_id": job_id})
 
     return {"queued": queued, "total": len(queued)}

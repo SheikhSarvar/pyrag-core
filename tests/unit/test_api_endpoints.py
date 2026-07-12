@@ -154,7 +154,7 @@ async def test_document_upload_queues_ingestion_task() -> None:
         yield mock_session
 
     mock_minio = MagicMock()
-    mock_minio.upload_bytes = MagicMock(return_value="ds-1/doc-1/raw/report.txt")
+    mock_minio.upload_file = MagicMock(return_value="ds-1/doc-1/raw/report.txt")
 
     mock_task_result = MagicMock(id="celery-task-1")
     mock_task = MagicMock()
@@ -188,9 +188,62 @@ async def test_document_upload_queues_ingestion_task() -> None:
     assert data["dataset_id"] == "ds-1"
     assert data["filename"] == "report.txt"
     assert data["status"] == "pending"
-    assert mock_minio.upload_bytes.call_count == 1
+    assert mock_minio.upload_file.call_count == 1
     assert mock_task.apply_async.call_count == 1
     assert mock_session.commit.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_document_reindex_commits_before_enqueue() -> None:
+    from app.api.v1.endpoints import documents as documents_endpoint
+
+    mock_document = MagicMock()
+    mock_document.dataset_id = "ds-1"
+    mock_document.original_name = "report.txt"
+    mock_document.file_size = 11
+    mock_document.storage_path = "ds-1/doc-1/raw/report.txt"
+
+    mock_dataset = MagicMock()
+    mock_dataset.chunk_strategy = "recursive"
+
+    mock_session = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    async def override_get_db() -> AsyncIterator[AsyncMock]:
+        yield mock_session
+
+    mock_task_result = MagicMock(id="celery-task-2")
+    mock_task = MagicMock()
+
+    def apply_async_side_effect(*args, **kwargs):
+        assert mock_session.commit.await_count == 1
+        return mock_task_result
+
+    mock_task.apply_async = MagicMock(side_effect=apply_async_side_effect)
+
+    with patch.object(documents_endpoint, "DocumentRepository") as MockDocumentRepo, \
+         patch.object(documents_endpoint, "JobRepository") as MockJobRepo, \
+         patch("app.db.repositories.DatasetRepository") as MockDatasetRepo, \
+         patch("app.worker.tasks.ingestion.ingest_document", mock_task):
+        MockDocumentRepo.return_value.get = AsyncMock(return_value=mock_document)
+        MockJobRepo.return_value.create = AsyncMock(return_value=MagicMock())
+        MockJobRepo.return_value.mark_started = AsyncMock()
+        MockDatasetRepo.return_value.get = AsyncMock(return_value=mock_dataset)
+
+        app.dependency_overrides[documents_endpoint.get_db] = override_get_db
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/documents/reindex",
+                    json={"document_ids": ["doc-1"]},
+                )
+        finally:
+            app.dependency_overrides.pop(documents_endpoint.get_db, None)
+
+    assert resp.status_code == 202
+    assert resp.json()["total"] == 1
+    assert mock_task.apply_async.call_count == 1
+    assert mock_session.commit.await_count == 2
 
 
 @pytest.mark.asyncio

@@ -16,6 +16,10 @@ from app.services.vector.base import (
 
 logger = get_logger(__name__)
 
+# Module-level cache: tracks which collections already have payload indexes so
+# we avoid an extra Qdrant API call on every collection-exists check.
+_indexed_collections: set[str] = set()
+
 _DISTANCE_MAP = {
     "cosine": qmodels.Distance.COSINE,
     "dot": qmodels.Distance.DOT,
@@ -23,10 +27,53 @@ _DISTANCE_MAP = {
 }
 
 
+
 class QdrantAdapter(VectorStore):
 
     def __init__(self, client: AsyncQdrantClient) -> None:
         self._client = client
+
+    async def _ensure_payload_indexes(self, collection_name: str) -> None:
+        """
+        Ensure payload indexes exist for high-frequency filter keys.
+        This is critical for fast filtered search and delete_by_filter.
+
+        Uses a module-level in-process cache to avoid a redundant Qdrant API
+        call on every subsequent ingestion batch for the same collection.
+        """
+        if collection_name in _indexed_collections:
+            return
+
+        all_indexes_ready = True
+        for field in ("dataset_id", "document_id"):
+            try:
+                await self._client.create_payload_index(
+                    collection_name=collection_name,
+                    field_name=field,
+                    field_schema=qmodels.PayloadSchemaType.KEYWORD,
+                )
+                logger.info("Created payload index", collection=collection_name, field=field)
+            except UnexpectedResponse as exc:
+                if getattr(exc, "status_code", None) == 409:
+                    # Index already exists — still mark as done
+                    continue
+                all_indexes_ready = False
+                logger.warning(
+                    "Failed to create payload index",
+                    collection=collection_name,
+                    field=field,
+                    error=str(exc),
+                )
+            except Exception as exc:
+                all_indexes_ready = False
+                logger.warning(
+                    "Failed to create payload index",
+                    collection=collection_name,
+                    field=field,
+                    error=str(exc),
+                )
+        if all_indexes_ready:
+            _indexed_collections.add(collection_name)
 
     # ── Collection management ─────────────────────────────────────────────────
 
@@ -39,7 +86,14 @@ class QdrantAdapter(VectorStore):
         try:
             if await self.collection_exists(collection_name):
                 logger.debug("Collection already exists", collection=collection_name)
+                await self._ensure_payload_indexes(collection_name)
                 return
+
+            settings = get_settings()
+            indexing_threshold = settings.qdrant_indexing_threshold
+            if indexing_threshold is None:
+                indexing_threshold = 0 if settings.is_production else 1000
+
             await self._client.create_collection(
                 collection_name=collection_name,
                 vectors_config=qmodels.VectorParams(
@@ -47,13 +101,14 @@ class QdrantAdapter(VectorStore):
                     distance=_DISTANCE_MAP.get(distance, qmodels.Distance.COSINE),
                 ),
                 optimizers_config=qmodels.OptimizersConfigDiff(
-                    indexing_threshold=20_000,
+                    indexing_threshold=indexing_threshold,
                 ),
                 hnsw_config=qmodels.HnswConfigDiff(
                     m=16,
                     ef_construct=100,
                 ),
             )
+            await self._ensure_payload_indexes(collection_name)
             logger.info("Created collection", collection=collection_name, dimensions=dimensions)
         except Exception as exc:
             raise VectorStoreError(f"Failed to create collection: {exc}") from exc
@@ -230,6 +285,10 @@ class QdrantAdapter(VectorStore):
 
 @lru_cache
 def get_qdrant_client() -> AsyncQdrantClient:
+    return create_qdrant_client()
+
+
+def create_qdrant_client() -> AsyncQdrantClient:
     settings = get_settings()
     return AsyncQdrantClient(
         url=settings.qdrant_url,

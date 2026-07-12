@@ -3,6 +3,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.services.vector.base import SearchQuery
+from app.services.vector import qdrant_adapter as qdrant_module
 from app.services.vector.qdrant_adapter import QdrantAdapter
 
 
@@ -23,6 +24,11 @@ class QueryPointsOnlyClient:
         )
 
 
+class FailingPayloadIndexClient(QueryPointsOnlyClient):
+    async def create_payload_index(self, **kwargs):
+        raise RuntimeError("payload index failed")
+
+
 @pytest.mark.asyncio
 async def test_search_uses_query_points_when_search_is_missing() -> None:
     client = QueryPointsOnlyClient()
@@ -40,3 +46,14 @@ async def test_search_uses_query_points_when_search_is_missing() -> None:
     assert client.captured is not None
     assert client.captured["collection_name"] == "dataset-1"
     assert client.captured["limit"] == 5
+
+
+@pytest.mark.asyncio
+async def test_payload_index_failure_does_not_cache_collection() -> None:
+    qdrant_module._indexed_collections.discard("dataset-1")
+    client = FailingPayloadIndexClient()
+    adapter = QdrantAdapter(client)  # type: ignore[arg-type]
+
+    await adapter._ensure_payload_indexes("dataset-1")
+
+    assert "dataset-1" not in qdrant_module._indexed_collections

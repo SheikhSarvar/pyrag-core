@@ -57,6 +57,8 @@ class Settings(BaseSettings):
     vector_provider: Literal["qdrant", "weaviate", "milvus", "pgvector", "elasticsearch"] = "qdrant"
     qdrant_url: str = "http://localhost:6333"
     qdrant_api_key: str = ""
+    # If unset, defaults to 0 in production (always index) and 1000 otherwise.
+    qdrant_indexing_threshold: int | None = None
 
     # ── LLM Providers ──────────────────────────────────────────────────────────
     openai_api_key: str = ""
