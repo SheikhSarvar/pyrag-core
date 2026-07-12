@@ -1,12 +1,18 @@
-.PHONY: install dev lint format typecheck test test-unit test-integration migrate docker-up docker-down clean
+.PHONY: install install-ui dev ui lint format typecheck test test-unit test-integration migrate docker-up docker-ui docker-down clean
 
 # ── Setup ─────────────────────────────────────────────────────────────────────
 install:
 	uv sync --extra dev
 
+install-ui:
+	uv sync --extra dev --extra ui
+
 # ── Dev server ────────────────────────────────────────────────────────────────
 dev:
 	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+
+ui:
+	streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
 
 # ── Code quality ──────────────────────────────────────────────────────────────
 lint:
@@ -47,6 +53,9 @@ migrate-new:
 # ── Docker ────────────────────────────────────────────────────────────────────
 docker-up:
 	docker compose up -d
+
+docker-ui:
+	docker compose --profile ui up -d --build
 
 docker-down:
 	docker compose down

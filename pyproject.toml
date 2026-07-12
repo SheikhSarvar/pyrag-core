@@ -19,36 +19,28 @@ dependencies = [
     "fastapi>=0.115.0",
     "uvicorn[standard]>=0.30.0",
     "python-multipart>=0.0.9",
-
     # Data validation
     "pydantic>=2.8.0",
     "pydantic-settings>=2.4.0",
-
     # Database
     "sqlalchemy>=2.0.35",
     "alembic>=1.13.0",
     "asyncpg>=0.29.0",
     "psycopg2-binary>=2.9.9",
-
     # Task queue
     "celery[redis]>=5.4.0",
     "redis>=5.0.0",
-
     # Object storage
     "minio>=7.2.0",
-
     # Vector stores
     "qdrant-client>=1.11.0",
-
     # LLM providers
     "openai>=1.50.0",
     "anthropic>=0.34.0",
     "google-generativeai>=0.8.0",
-
     # Embeddings & ML
     "tiktoken>=0.7.0",
     "sentence-transformers>=3.1.0",
-
     # Document parsers
     "pymupdf>=1.24.0",
     "python-docx>=1.1.0",
@@ -58,22 +50,20 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "html2text>=2024.2.26",
     "httpx>=0.27.0",
-
     # Agent framework
     "langgraph>=0.2.0",
     "langchain>=0.3.0",
     "langchain-community>=0.3.0",
     "langchain-openai>=0.2.0",
     "langchain-anthropic>=0.2.0",
-
     # Observability
     "langfuse>=2.0.0",
     "langdetect>=1.0.9",
-
     # Utilities
     "tenacity>=9.0.0",
     "structlog>=24.4.0",
     "rich>=13.8.0",
+    "code-review-graph>=2.3.6",
 ]
 
 [project.optional-dependencies]
@@ -89,6 +79,8 @@ dev = [
     "types-redis>=4.6.0",
     "types-passlib>=1.7.7",
 ]
+
+ui = ["streamlit>=1.36.0"]
 
 weaviate = ["weaviate-client>=4.7.0"]
 milvus = ["pymilvus>=2.4.0"]

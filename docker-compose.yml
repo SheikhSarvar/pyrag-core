@@ -190,6 +190,24 @@ services:
       - pyrag-net
     restart: no
 
+# -- Developer UI (Streamlit) ------------------------------------------------
+  ui:
+    build:
+      context: .
+      target: development
+    container_name: pyrag-ui
+    profiles: ["ui"]
+    command: streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501
+    ports:
+      - "8501:8501"
+    environment:
+      <<: *common-env
+    volumes:
+      - .:/app
+    restart: unless-stopped
+    networks:
+      - pyrag-net
+
 # ── Volumes ───────────────────────────────────────────────────────────────────
 volumes:
   postgres_data:

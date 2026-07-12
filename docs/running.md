@@ -21,6 +21,16 @@ Pick the path that matches your goal. Path A takes about 2 minutes. Path B takes
 
 You do **not** need Docker for Path A. You do **not** need an LLM API key for Path A or for ingestion-only testing in Path B.
 
+## Qdrant UI
+
+When you start the local Docker stack, Qdrant gives you a browser-friendly docs page that works a lot like Swagger:
+
+- Browser UI: `http://localhost:6333/dashboard`
+- REST API: `http://localhost:6333`
+- gRPC API: `localhost:6334`
+
+If the page does not load, confirm the stack is running with `docker compose ps` and check `docker compose logs -f qdrant`.
+
 ---
 
 ## Path A — Unit tests only (no Docker, no API keys)
