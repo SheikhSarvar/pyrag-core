@@ -30,7 +30,7 @@ RUN uv pip install --system .
 # ── Development ───────────────────────────────────────────────────────────────
 FROM deps AS development
 
-RUN uv pip install --system ".[dev]"
+RUN uv pip install --system ".[dev,ui]"
 
 CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 

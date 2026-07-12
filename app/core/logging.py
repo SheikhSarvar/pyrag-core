@@ -54,11 +54,16 @@ def setup_logging() -> None:
         ],
     )
 
+    import os
+    os.makedirs("logs", exist_ok=True)
+    file_handler = logging.FileHandler("logs/pyrag.log")
+    file_handler.setFormatter(formatter)
+
     handler = logging.StreamHandler(sys.stdout)
     handler.setFormatter(formatter)
 
     root_logger = logging.getLogger()
-    root_logger.handlers = [handler]
+    root_logger.handlers = [handler, file_handler]
     root_logger.setLevel(
         logging.DEBUG if settings.debug else logging.INFO
     )

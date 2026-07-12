@@ -34,6 +34,23 @@ ENV/
 *.swo
 .DS_Store
 
+# AI coding agents
+.codex/
+.cursor/
+.windsurf/
+.cline/
+.roo/
+.continue/
+.specstory/
+.aider*
+.cursorrules
+.cursorignore
+.clinerules
+.roorules
+AGENTS.md
+CLAUDE.md
+GEMINI.md
+
 # Testing & coverage
 .pytest_cache/
 htmlcov/
@@ -60,3 +77,5 @@ postgres_data/
 redis_data/
 qdrant_data/
 minio_data/
+# Added by code-review-graph
+.code-review-graph/

@@ -39,8 +39,37 @@ make dev
 
 API available at `http://localhost:8000`
 Docs at `http://localhost:8000/docs`
+Qdrant browser docs at `http://localhost:6333/dashboard`
 
 See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) for how every pipeline stage works internally, the data model, security model, and a list of known limitations / unverified integration points.
+
+## Developer UI (Streamlit)
+
+Quick playground for parsing → cleaning → chunking (no DB/MinIO required).
+
+```bash
+uv sync --extra dev --extra ui
+make ui
+```
+
+UI: `http://localhost:8501`
+
+Run it via Docker (optional):
+
+```bash
+docker compose --profile ui up -d --build
+```
+
+## Qdrant UI
+
+When you run the local Docker stack, Qdrant is exposed on:
+
+- Browser UI: `http://localhost:6333/dashboard`
+- REST API: `http://localhost:6333`
+- gRPC: `localhost:6334`
+
+Use the browser UI to inspect collections, payloads, and request/response shapes before you index data. If the UI does not load, confirm the container is running with `docker compose ps` and try the REST health check:
+
 
 ## Project Structure
 
