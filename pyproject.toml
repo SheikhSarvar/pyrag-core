@@ -7,7 +7,7 @@ packages = ["app"]
 
 [project]
 name = "pyrag-core"
-version = "1.0.0"
+version = "1.1.0"
 description = "Open-source Python-first Retrieval-Augmented Generation platform"
 readme = "README.md"
 requires-python = ">=3.12"

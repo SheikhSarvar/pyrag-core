@@ -1,5 +1,6 @@
 import pytest
 
+import app
 from app.core.config import Settings
 
 
@@ -39,3 +40,8 @@ def test_production_rejects_wildcard_cors() -> None:
             database_url="postgresql+asyncpg://u:p@h/db",
             cors_origins=["*"],  # type: ignore[list-item]
         )
+
+
+def test_package_version_matches_settings_version() -> None:
+    s = Settings(secret_key="a" * 32, database_url="postgresql+asyncpg://u:p@h/db")
+    assert app.__version__ == s.version == "1.1.0"
