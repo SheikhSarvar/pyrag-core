@@ -4,6 +4,8 @@ from typing import Literal
 from pydantic import AnyHttpUrl, Field, computed_field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from app.core.version import VERSION
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -19,7 +21,7 @@ class Settings(BaseSettings):
     secret_key: str = Field(min_length=32)
     api_v1_prefix: str = "/api/v1"
     project_name: str = "PyRAG Core"
-    version: str = "1.0.0"
+    version: str = VERSION
 
     @computed_field  # type: ignore[misc]
     @property

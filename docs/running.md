@@ -124,7 +124,7 @@ This creates all 6 tables (`datasets`, `documents`, `chunks`, `providers`, `anal
 
 ```bash
 curl http://localhost:8000/health
-# {"status":"ok","version":"1.0.0"}
+# {"status":"ok","version":"1.1.0"}
 ```
 
 Interactive API docs: open `http://localhost:8000/docs` in a browser.
