@@ -1,10 +1,7 @@
 """
-Hybrid retrieval fusion — T26.
+Hybrid retrieval fusion - T26.
 Combines dense (vector) and sparse (BM25) results using
 Reciprocal Rank Fusion (RRF).
-
-RRF score = Σ 1/(k + rank_i)   where k=60 is the standard constant.
-This is rank-order fusion — no score normalisation needed.
 """
 from __future__ import annotations
 
@@ -24,10 +21,6 @@ class HybridResult:
     metadata: dict
 
 
-def _rrf_score(ranks: list[int], k: int = 60) -> float:
-    return sum(1.0 / (k + r) for r in ranks)
-
-
 def fuse_results(
     dense_results: list[DenseResult],
     sparse_results: list[SparseResult],
@@ -38,17 +31,6 @@ def fuse_results(
 ) -> list[HybridResult]:
     """
     Merge dense and sparse result lists using weighted RRF.
-
-    Args:
-        dense_results:  Ordered list of dense search results.
-        sparse_results: Ordered list of sparse search results.
-        top_k:          Number of final results to return.
-        k:              RRF constant (60 is empirically optimal).
-        dense_weight:   Weight multiplier for dense RRF scores.
-        sparse_weight:  Weight multiplier for sparse RRF scores.
-
-    Returns:
-        Fused list sorted by descending RRF score.
     """
     scores: dict[str, float] = {}
     dense_score_map: dict[str, float] = {}
@@ -93,27 +75,26 @@ async def hybrid_search(
     candidate_k: int = 30,
     dense_weight: float = 0.7,
     sparse_weight: float = 0.3,
+    score_threshold: float | None = None,
+    filters: dict | None = None,
     session=None,
 ) -> list[HybridResult]:
     """
     Run dense + sparse in parallel then fuse with RRF.
-
-    Args:
-        dataset_id:    Target dataset.
-        query:         Query string.
-        top_k:         Final results after fusion.
-        candidate_k:   Candidates retrieved from each source before fusion.
-        dense_weight:  RRF weight for dense results (higher = more semantic).
-        sparse_weight: RRF weight for sparse results (higher = more keyword-exact).
-        session:       AsyncSession for sparse BM25 chunk fetch.
     """
     import asyncio
 
     dense_task = asyncio.create_task(
-        dense_search(dataset_id, query, top_k=candidate_k)
+        dense_search(
+            dataset_id,
+            query,
+            top_k=candidate_k,
+            score_threshold=score_threshold,
+            filters=filters,
+        )
     )
     sparse_task = asyncio.create_task(
-        sparse_search(dataset_id, query, top_k=candidate_k, session=session)
+        sparse_search(dataset_id, query, top_k=candidate_k, session=session, filters=filters)
     )
     dense_results, sparse_results = await asyncio.gather(dense_task, sparse_task)
 

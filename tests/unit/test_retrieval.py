@@ -4,6 +4,8 @@ No real vector store, embedder, or LLM calls.
 """
 from __future__ import annotations
 
+from unittest.mock import AsyncMock, patch
+
 import pytest
 
 from app.services.retrieval.query_understanding import understand_query
@@ -14,6 +16,7 @@ from app.services.retrieval.context import compress_context, assemble_prompt, Co
 from app.services.retrieval.dense import DenseResult
 from app.services.retrieval.sparse import SparseResult
 from app.services.retrieval.hybrid import HybridResult
+from app.services.retrieval.pipeline import RetrievalConfig, run_retrieval_pipeline
 
 
 # ── Query Understanding ───────────────────────────────────────────────────────
@@ -82,6 +85,31 @@ async def test_expand_all_queries_deduplicated() -> None:
 async def test_expand_no_synonym_returns_original_only() -> None:
     result = await expand_query("xyz abstract concept qwerty", use_llm=False)
     assert result.original in result.all_queries
+
+
+@pytest.mark.asyncio
+async def test_pipeline_uses_expanded_queries() -> None:
+    mock_result = DenseResult(
+        chunk_id="chunk-1",
+        score=0.9,
+        chunk_text="Revenue grew 20 percent.",
+        metadata={},
+    )
+
+    with patch("app.services.retrieval.pipeline.expand_query", AsyncMock(return_value=ExpandedQuery(
+        original="revenue",
+        variants=["sales", "income"],
+    ))), patch("app.services.retrieval.pipeline.hybrid_search", AsyncMock(return_value=[mock_result])) as mock_hybrid:
+        await run_retrieval_pipeline(
+            dataset_id="ds-1",
+            query="revenue",
+            config=RetrievalConfig(mode="hybrid", expand_query=True, rerank=False),
+            session=AsyncMock(),
+        )
+
+    assert mock_hybrid.await_count == 3
+    called_queries = [call.args[1] for call in mock_hybrid.await_args_list]
+    assert called_queries == ["revenue", "sales", "income"]
 
 
 # ── BM25 ──────────────────────────────────────────────────────────────────────
