@@ -347,3 +347,36 @@ async def test_search_invalid_body() -> None:
     async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
         resp = await client.post("/api/v1/search", json={"dataset_id": "ds-1"})  # missing query
     assert resp.status_code == 422
+
+
+@pytest.mark.asyncio
+async def test_search_forwards_filters_and_threshold() -> None:
+    from app.services.retrieval.context import CompressedContext, AssembledPrompt
+    from app.services.retrieval.query_understanding import UnderstoodQuery
+    from app.services.retrieval.pipeline import RetrievalResult, RetrievalConfig
+
+    mock_result = RetrievalResult(
+        query=UnderstoodQuery(original="test", normalized="test", intent="search", keywords=["test"]),
+        prompt=AssembledPrompt(system="sys", user="usr", context_chunks=[], total_tokens=10),
+        context=CompressedContext(chunks=[], total_tokens=0, dropped_count=0),
+        raw_result_count=0,
+        mode="hybrid",
+    )
+
+    with patch("app.api.v1.endpoints.search.run_retrieval_pipeline", AsyncMock(return_value=mock_result)) as mock_pipeline, \
+         patch("app.api.v1.endpoints.search.AnalyticsRepository") as mock_repo:
+        mock_repo.return_value.create = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/v1/search", json={
+                "dataset_id": "ds-1",
+                "query": "revenue",
+                "score_threshold": 0.8,
+                "filters": {"filename": "report.pdf"},
+            })
+
+    assert resp.status_code == 200
+    _, kwargs = mock_pipeline.await_args
+    config = kwargs["config"]
+    assert isinstance(config, RetrievalConfig)
+    assert config.score_threshold == 0.8
+    assert config.filters == {"filename": "report.pdf"}

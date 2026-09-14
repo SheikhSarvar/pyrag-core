@@ -40,6 +40,7 @@ async def search(
         rerank_top_k=body.top_k,
         expand_query=body.expand_query,
         score_threshold=body.score_threshold,
+        filters=body.filters,
     )
 
     result = await run_retrieval_pipeline(

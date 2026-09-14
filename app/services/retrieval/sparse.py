@@ -1,8 +1,6 @@
 """
-Sparse retrieval — T25.
+Sparse retrieval - T25.
 BM25 over chunk text stored in PostgreSQL.
-No external index needed — suitable for datasets up to ~100k chunks.
-For larger datasets, plug in Elasticsearch with BM25 field queries.
 """
 from __future__ import annotations
 
@@ -23,9 +21,6 @@ class SparseResult:
 class BM25:
     """
     In-process BM25 implementation.
-    Call `build(corpus)` then `search(query, top_k)`.
-
-    k1=1.5, b=0.75 — standard defaults that work well across domains.
     """
 
     def __init__(self, k1: float = 1.5, b: float = 0.75) -> None:
@@ -42,11 +37,7 @@ class BM25:
     def _tokenize(text: str) -> list[str]:
         return re.findall(r"\b\w+\b", text.lower())
 
-    def build(
-        self,
-        documents: list[tuple[str, str, dict]],  # (id, text, metadata)
-    ) -> None:
-        """Build BM25 index from a list of (id, text, metadata) tuples."""
+    def build(self, documents: list[tuple[str, str, dict]]) -> None:
         self._doc_ids = [d[0] for d in documents]
         self._doc_texts = [d[1] for d in documents]
         self._doc_metadata = [d[2] for d in documents]
@@ -58,7 +49,6 @@ class BM25:
 
         self._avgdl = sum(len(doc) for doc in self._corpus) / n
 
-        # IDF: log((N - df + 0.5) / (df + 0.5) + 1)
         df: Counter[str] = Counter()
         for doc_tokens in self._corpus:
             for token in set(doc_tokens):
@@ -90,11 +80,7 @@ class BM25:
                 score += idf * (numerator / denominator)
             scores.append(score)
 
-        ranked = sorted(
-            range(len(scores)),
-            key=lambda i: scores[i],
-            reverse=True,
-        )
+        ranked = sorted(range(len(scores)), key=lambda i: scores[i], reverse=True)
 
         return [
             SparseResult(
@@ -112,32 +98,43 @@ async def sparse_search(
     dataset_id: str,
     query: str,
     top_k: int = 20,
-    session=None,  # AsyncSession — injected at call site
+    session=None,
+    filters: dict | None = None,
 ) -> list[SparseResult]:
     """
     Build a BM25 index on-the-fly from chunks in PostgreSQL and search it.
-
-    For production-scale deployments (>100k chunks), replace with an
-    Elasticsearch BM25 query against `ElasticsearchAdapter`.
     """
     if session is None:
         return []
 
-    from sqlalchemy import select, text
+    from sqlalchemy import select
     from app.db.models.chunk import Chunk
 
     result = await session.execute(
         select(Chunk.id, Chunk.chunk_text, Chunk.chunk_metadata)
         .where(Chunk.dataset_id == dataset_id)
         .order_by(Chunk.created_at.desc())
-        .limit(50_000)  # safety cap
+        .limit(50_000)
     )
     rows = result.all()
 
     if not rows:
         return []
 
-    docs = [(row.id, row.chunk_text, row.chunk_metadata or {}) for row in rows]
+    def _matches_filters(row_metadata: dict | None) -> bool:
+        if not filters:
+            return True
+        metadata = row_metadata or {}
+        return all(metadata.get(key) == value for key, value in filters.items())
+
+    docs = [
+        (row.id, row.chunk_text, row.chunk_metadata or {})
+        for row in rows
+        if _matches_filters(row.chunk_metadata)
+    ]
+    if not docs:
+        return []
+
     bm25 = BM25()
     bm25.build(docs)
     return bm25.search(query, top_k=top_k)
