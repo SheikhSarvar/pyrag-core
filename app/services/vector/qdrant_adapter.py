@@ -75,6 +75,41 @@ class QdrantAdapter(VectorStore):
         if all_indexes_ready:
             _indexed_collections.add(collection_name)
 
+    @staticmethod
+    def _build_filter(filters: dict | None) -> qmodels.Filter | None:
+        if not filters:
+            return None
+
+        must_conditions: list[qmodels.FieldCondition] = []
+        should_conditions: list[qmodels.FieldCondition] = []
+        match_any_cls = getattr(qmodels, "MatchAny", None)
+        for key, value in filters.items():
+            if isinstance(value, (list, tuple, set)):
+                if match_any_cls is not None:
+                    must_conditions.append(
+                        qmodels.FieldCondition(
+                            key=key,
+                            match=match_any_cls(any=[str(item) for item in value]),
+                        )
+                    )
+                else:
+                    should_conditions.extend(
+                        qmodels.FieldCondition(
+                            key=key,
+                            match=qmodels.MatchValue(value=str(item)),
+                        )
+                        for item in value
+                    )
+            else:
+                must_conditions.append(
+                    qmodels.FieldCondition(
+                        key=key,
+                        match=qmodels.MatchValue(value=value),
+                    )
+                )
+
+        return qmodels.Filter(must=must_conditions, should=should_conditions or None)
+
     # ── Collection management ─────────────────────────────────────────────────
 
     async def create_collection(
@@ -180,17 +215,10 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, filters: dict
     ) -> None:
         try:
-            conditions = [
-                qmodels.FieldCondition(
-                    key=k,
-                    match=qmodels.MatchValue(value=v),
-                )
-                for k, v in filters.items()
-            ]
             await self._client.delete(
                 collection_name=collection_name,
                 points_selector=qmodels.FilterSelector(
-                    filter=qmodels.Filter(must=conditions)
+                    filter=self._build_filter(filters)
                 ),
                 wait=True,
             )
@@ -203,17 +231,7 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, query: SearchQuery
     ) -> list[SearchResult]:
         try:
-            qdrant_filter = None
-            if query.filters:
-                qdrant_filter = qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key=k,
-                            match=qmodels.MatchValue(value=v),
-                        )
-                        for k, v in query.filters.items()
-                    ]
-                )
+            qdrant_filter = self._build_filter(query.filters)
             if hasattr(self._client, "search"):
                 results = await self._client.search(
                     collection_name=collection_name,
@@ -265,14 +283,7 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, filters: dict | None = None
     ) -> int:
         try:
-            qdrant_filter = None
-            if filters:
-                qdrant_filter = qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(key=k, match=qmodels.MatchValue(value=v))
-                        for k, v in filters.items()
-                    ]
-                )
+            qdrant_filter = self._build_filter(filters)
             result = await self._client.count(
                 collection_name=collection_name,
                 count_filter=qdrant_filter,

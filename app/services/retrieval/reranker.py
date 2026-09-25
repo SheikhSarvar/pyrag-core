@@ -22,6 +22,13 @@ class RerankedResult:
     metadata: dict
 
 
+@dataclass
+class RerankOutcome:
+    results: list[RerankedResult]
+    status: str
+    error: str | None = None
+
+
 class CrossEncoderReranker:
     """
     Local cross-encoder using sentence-transformers.
@@ -48,27 +55,47 @@ class CrossEncoderReranker:
         query: str,
         candidates: list[tuple[str, str, float, dict]],  # (id, text, score, meta)
         top_k: int = 5,
-    ) -> list[RerankedResult]:
+    ) -> RerankOutcome:
         if not candidates:
-            return []
-        self._load()
-        pairs = [(query, text) for _, text, _, _ in candidates]
-        scores: list[float] = self._model.predict(pairs).tolist()
-        ranked = sorted(
-            zip(scores, candidates),
-            key=lambda x: x[0],
-            reverse=True,
-        )
-        return [
-            RerankedResult(
-                chunk_id=cid,
-                rerank_score=float(score),
-                original_score=orig_score,
-                chunk_text=text,
-                metadata=meta,
+            return RerankOutcome(results=[], status="empty")
+        try:
+            self._load()
+            pairs = [(query, text) for _, text, _, _ in candidates]
+            scores: list[float] = self._model.predict(pairs).tolist()
+            ranked = sorted(
+                zip(scores, candidates),
+                key=lambda x: x[0],
+                reverse=True,
             )
-            for score, (cid, text, orig_score, meta) in ranked[:top_k]
-        ]
+            return RerankOutcome(
+                results=[
+                    RerankedResult(
+                        chunk_id=cid,
+                        rerank_score=float(score),
+                        original_score=orig_score,
+                        chunk_text=text,
+                        metadata=meta,
+                    )
+                    for score, (cid, text, orig_score, meta) in ranked[:top_k]
+                ],
+                status="ok",
+            )
+        except Exception:
+            # Fail open: if the model cannot be loaded or run, keep original order.
+            return RerankOutcome(
+                results=[
+                    RerankedResult(
+                        chunk_id=cid,
+                        rerank_score=orig_score,
+                        original_score=orig_score,
+                        chunk_text=text,
+                        metadata=meta,
+                    )
+                    for cid, text, orig_score, meta in candidates[:top_k]
+                ],
+                status="fallback",
+                error="Reranker unavailable, returned original order",
+            )
 
 
 class CohereReranker:
@@ -131,7 +158,7 @@ async def rerank_results(
     candidates: list[Any],  # DenseResult | HybridResult | SparseResult
     top_k: int = 5,
     backend: str = "local",
-) -> list[RerankedResult]:
+) -> RerankOutcome:
     """
     Rerank a list of retrieval results.
 
@@ -157,14 +184,46 @@ async def rerank_results(
     ]
 
     if backend == "cohere":
-        reranker = CohereReranker()
-        return await reranker.rerank(query, tuples, top_k=top_k)
+        try:
+            reranker = CohereReranker()
+            return await reranker.rerank(query, tuples, top_k=top_k)
+        except Exception:
+            return RerankOutcome(
+                results=[
+                    RerankedResult(
+                        chunk_id=cid,
+                        rerank_score=orig_score,
+                        original_score=orig_score,
+                        chunk_text=text,
+                        metadata=meta,
+                    )
+                    for cid, text, orig_score, meta in tuples[:top_k]
+                ],
+                status="fallback",
+                error="Cohere reranker unavailable, returned original order",
+            )
 
     # Default: local cross-encoder (sync, run in executor)
     import asyncio
     reranker_local = CrossEncoderReranker()
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(
-        None,
-        lambda: reranker_local.rerank(query, tuples, top_k=top_k),
-    )
+    try:
+        return await loop.run_in_executor(
+            None,
+            lambda: reranker_local.rerank(query, tuples, top_k=top_k),
+        )
+    except Exception:
+        return RerankOutcome(
+            results=[
+                RerankedResult(
+                    chunk_id=cid,
+                    rerank_score=orig_score,
+                    original_score=orig_score,
+                    chunk_text=text,
+                    metadata=meta,
+                )
+                for cid, text, orig_score, meta in tuples[:top_k]
+            ],
+            status="fallback",
+            error="Local reranker unavailable, returned original order",
+        )

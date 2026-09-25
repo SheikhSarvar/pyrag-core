@@ -57,3 +57,12 @@ async def test_payload_index_failure_does_not_cache_collection() -> None:
     await adapter._ensure_payload_indexes("dataset-1")
 
     assert "dataset-1" not in qdrant_module._indexed_collections
+
+
+def test_build_filter_supports_multi_value_filters() -> None:
+    flt = QdrantAdapter._build_filter({"chunk_id": ["chunk-1", "chunk-2"], "dataset_id": "ds-1"})
+
+    assert flt is not None
+    assert len(flt.must or []) == 2
+    assert any(cond.key == "chunk_id" for cond in flt.must or [])
+    assert any(cond.key == "dataset_id" for cond in flt.must or [])

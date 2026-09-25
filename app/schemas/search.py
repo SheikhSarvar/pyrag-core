@@ -37,6 +37,37 @@ class SearchResponse(BaseModel):
     total_results: int
     latency_ms: int
     reranked: bool
+    cache_hit: bool = False
+    rerank_status: str = "not_requested"
+    rerank_error: str | None = None
+
+
+class RetrievalTraceChunk(BaseModel):
+    chunk_id: str
+    text: str
+    metadata: dict
+    score: float | None = None
+    rerank_score: float | None = None
+    rrf_score: float | None = None
+    dense_score: float | None = None
+    sparse_score: float | None = None
+
+
+class SearchDebugResponse(BaseModel):
+    query: str
+    dataset_id: str
+    mode: str
+    cache_hit: bool
+    cache_key: str | None = None
+    metadata_filtered_chunk_ids: list[str] = Field(default_factory=list)
+    raw_candidates: list[RetrievalTraceChunk] = Field(default_factory=list)
+    reranked_candidates: list[RetrievalTraceChunk] = Field(default_factory=list)
+    final_chunks: list[ChunkResult] = Field(default_factory=list)
+    total_results: int
+    latency_ms: int
+    reranked: bool
+    rerank_status: str = "not_requested"
+    rerank_error: str | None = None
 
 
 # ── Chat ──────────────────────────────────────────────────────────────────────
