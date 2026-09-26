@@ -6,6 +6,7 @@ from fastapi import FastAPI
 from app.core.config import get_settings
 from app.core.logging import get_logger, setup_logging
 from app.db.session import engine
+from app.services.retrieval.reranker import warmup_rerankers
 
 logger = get_logger(__name__)
 settings = get_settings()
@@ -46,6 +47,12 @@ async def _startup(app: FastAPI) -> None:
         logger.info("MinIO buckets ready")
     except Exception as exc:
         logger.warning("MinIO init failed", error=str(exc))
+
+    # Warm up reranker models so the first search request is not penalized.
+    try:
+        warmup_rerankers()
+    except Exception as exc:
+        logger.warning("Reranker warmup failed", error=str(exc))
 
     logger.info("PyRAG Core startup complete")
 

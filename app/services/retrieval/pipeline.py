@@ -120,6 +120,12 @@ async def run_retrieval_pipeline(
     if cfg.rerank and raw_results:
         from app.services.retrieval.reranker import rerank_results
 
+        logger.info(
+            "Starting rerank stage",
+            candidate_count=len(raw_results),
+            rerank_backend=cfg.rerank_backend,
+            rerank_top_k=cfg.rerank_top_k,
+        )
         rerank_outcome = await rerank_results(
             search_query,
             raw_results,
@@ -127,7 +133,12 @@ async def run_retrieval_pipeline(
             backend=cfg.rerank_backend,
         )
         raw_results = rerank_outcome.results
-        logger.debug("Reranked", kept=len(raw_results), status=rerank_outcome.status)
+        logger.info(
+            "Reranked",
+            kept=len(raw_results),
+            status=rerank_outcome.status,
+            error=rerank_outcome.error,
+        )
     elif not cfg.rerank:
         raw_results = raw_results[: cfg.top_k]
 
@@ -143,10 +154,20 @@ async def run_retrieval_pipeline(
     else:
         rerank_status = "disabled"
 
+    min_score = float("-inf") if cfg.rerank else 0.0
     context = compress_context(
         raw_results,
         max_tokens=cfg.max_context_tokens,
         dedup_threshold=cfg.dedup_threshold,
+        min_score=min_score,
+    )
+    logger.info(
+        "Context compressed",
+        input_count=len(raw_results),
+        kept_count=len(context.chunks),
+        dropped_count=context.dropped_count,
+        total_tokens=context.total_tokens,
+        min_score=min_score,
     )
 
     prompt = assemble_prompt(

@@ -233,6 +233,14 @@ class QdrantAdapter(VectorStore):
         try:
             qdrant_filter = self._build_filter(query.filters)
             if hasattr(self._client, "search"):
+            logger.info(
+                "Running Qdrant search",
+                collection=collection_name,
+                top_k=query.top_k,
+                has_search=hasattr(self._client, "search"),
+                has_query_points=hasattr(self._client, "query_points"),
+            )
+            if hasattr(self._client, "search"):
                 results = await self._client.search(
                     collection_name=collection_name,
                     query_vector=query.vector,
@@ -241,6 +249,23 @@ class QdrantAdapter(VectorStore):
                     score_threshold=query.score_threshold,
                     with_payload=True,
                 )
+            elif hasattr(self._client, "query_points"):
+                response = await self._client.query_points(
+                    collection_name=collection_name,
+                    query=query.vector,
+                    query_filter=qdrant_filter,
+                    limit=query.top_k,
+                    score_threshold=query.score_threshold,
+                    with_payload=True,
+                )
+                results = getattr(response, "points", response)
+            else:
+                raise AttributeError("Qdrant client does not expose search or query_points")
+            logger.info(
+                "Qdrant search complete",
+                collection=collection_name,
+                result_count=len(results),
+            )
             else:
                 results = await self._client.query_points(
                     collection_name=collection_name,
@@ -256,6 +281,12 @@ class QdrantAdapter(VectorStore):
                 for r in results
             ]
         except Exception as exc:
+            logger.exception(
+                "Qdrant search failed",
+                collection=collection_name,
+                top_k=query.top_k,
+                error=str(exc),
+            )
             raise VectorStoreError(f"Search failed: {exc}") from exc
 
     async def get(

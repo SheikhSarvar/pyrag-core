@@ -17,6 +17,7 @@ from app.services.retrieval.dense import DenseResult
 from app.services.retrieval.sparse import SparseResult
 from app.services.retrieval.hybrid import HybridResult
 from app.services.retrieval.pipeline import RetrievalConfig, run_retrieval_pipeline
+from app.services.retrieval.reranker import RerankOutcome, RerankedResult
 
 
 # ── Query Understanding ───────────────────────────────────────────────────────
@@ -110,6 +111,39 @@ async def test_pipeline_uses_expanded_queries() -> None:
     assert mock_hybrid.await_count == 3
     called_queries = [call.args[1] for call in mock_hybrid.await_args_list]
     assert called_queries == ["revenue", "sales", "income"]
+
+
+@pytest.mark.asyncio
+async def test_pipeline_keeps_negative_rerank_scores() -> None:
+    mock_result = DenseResult(
+        chunk_id="chunk-1",
+        score=0.9,
+        chunk_text="Revenue grew 20 percent.",
+        metadata={},
+    )
+    rerank_outcome = RerankOutcome(
+        results=[
+            RerankedResult(
+                chunk_id="chunk-1",
+                rerank_score=-1.5,
+                original_score=0.9,
+                chunk_text="Revenue grew 20 percent.",
+                metadata={},
+            )
+        ],
+        status="ok",
+    )
+
+    with patch("app.services.retrieval.dense.dense_search", AsyncMock(return_value=[mock_result])), \
+         patch("app.services.retrieval.reranker.rerank_results", AsyncMock(return_value=rerank_outcome)):
+        result = await run_retrieval_pipeline(
+            dataset_id="ds-1",
+            query="revenue",
+            config=RetrievalConfig(mode="standard", rerank=True, rerank_top_k=5),
+        )
+
+    assert len(result.context.chunks) == 1
+    assert result.context.chunks[0]["id"] == "chunk-1"
 
 
 # ── BM25 ──────────────────────────────────────────────────────────────────────
