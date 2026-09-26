@@ -160,10 +160,11 @@ async def test_document_upload_queues_ingestion_task() -> None:
     mock_task = MagicMock()
     mock_task.apply_async = MagicMock(return_value=mock_task_result)
 
+    from app.services.storage.minio_client import get_minio_client as orig_get_minio_client
+
     with patch.object(documents_endpoint, "DatasetRepository") as MockDatasetRepo, \
          patch.object(documents_endpoint, "DocumentRepository") as MockDocumentRepo, \
          patch.object(documents_endpoint, "JobRepository") as MockJobRepo, \
-         patch.object(documents_endpoint, "get_minio_client", return_value=mock_minio), \
          patch("app.worker.tasks.ingestion.ingest_document", mock_task):
         MockDatasetRepo.return_value.get_or_raise = AsyncMock(return_value=mock_dataset)
         MockDocumentRepo.return_value.create = AsyncMock(return_value=mock_document)
@@ -173,6 +174,7 @@ async def test_document_upload_queues_ingestion_task() -> None:
         MockJobRepo.return_value.mark_failed = AsyncMock()
 
         app.dependency_overrides[documents_endpoint.get_db] = override_get_db
+        app.dependency_overrides[orig_get_minio_client] = lambda: mock_minio
         try:
             async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
                 resp = await client.post(
@@ -182,15 +184,68 @@ async def test_document_upload_queues_ingestion_task() -> None:
                 )
         finally:
             app.dependency_overrides.pop(documents_endpoint.get_db, None)
+            app.dependency_overrides.pop(orig_get_minio_client, None)
 
-    assert resp.status_code == 202
+    assert resp.status_code == 202, f"Response: {resp.status_code} - {resp.text}"
     data = resp.json()
     assert data["dataset_id"] == "ds-1"
     assert data["filename"] == "report.txt"
     assert data["status"] == "pending"
     assert mock_minio.upload_file.call_count == 1
     assert mock_task.apply_async.call_count == 1
+    assert mock_task.apply_async.call_args[1]["kwargs"]["extraction_strategy"] == "native"
     assert mock_session.commit.await_count >= 2
+
+
+@pytest.mark.asyncio
+async def test_document_upload_unstructured_strategy() -> None:
+    from app.api.v1.endpoints import documents as documents_endpoint
+    from app.services.storage.minio_client import get_minio_client as orig_get_minio_client
+
+    mock_dataset = MagicMock()
+    mock_dataset.chunk_strategy = "recursive"
+    mock_document = MagicMock()
+    mock_job = MagicMock()
+    mock_session = AsyncMock()
+    mock_session.commit = AsyncMock()
+
+    async def override_get_db() -> AsyncIterator[AsyncMock]:
+        yield mock_session
+
+    mock_minio = MagicMock()
+    mock_minio.upload_file = MagicMock(return_value="ds-1/doc-1/raw/report.pdf")
+
+    mock_task_result = MagicMock(id="celery-task-1")
+    mock_task = MagicMock()
+    mock_task.apply_async = MagicMock(return_value=mock_task_result)
+
+    with patch.object(documents_endpoint, "DatasetRepository") as MockDatasetRepo, \
+         patch.object(documents_endpoint, "DocumentRepository") as MockDocumentRepo, \
+         patch.object(documents_endpoint, "JobRepository") as MockJobRepo, \
+         patch("app.worker.tasks.ingestion.ingest_document", mock_task):
+        MockDatasetRepo.return_value.get_or_raise = AsyncMock(return_value=mock_dataset)
+        MockDocumentRepo.return_value.create = AsyncMock(return_value=mock_document)
+        MockDocumentRepo.return_value.set_status = AsyncMock()
+        MockJobRepo.return_value.create = AsyncMock(return_value=mock_job)
+        MockJobRepo.return_value.mark_started = AsyncMock()
+        MockJobRepo.return_value.mark_failed = AsyncMock()
+
+        app.dependency_overrides[documents_endpoint.get_db] = override_get_db
+        app.dependency_overrides[orig_get_minio_client] = lambda: mock_minio
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.post(
+                    "/api/v1/documents/upload",
+                    data={"dataset_id": "ds-1", "extraction_strategy": "unstructured"},
+                    files={"file": ("report.pdf", b"%PDF-1.4 mock", "application/pdf")},
+                )
+        finally:
+            app.dependency_overrides.pop(documents_endpoint.get_db, None)
+            app.dependency_overrides.pop(orig_get_minio_client, None)
+
+    assert resp.status_code == 202, f"Response: {resp.status_code} - {resp.text}"
+    assert mock_task.apply_async.call_count == 1
+    assert mock_task.apply_async.call_args[1]["kwargs"]["extraction_strategy"] == "unstructured"
 
 
 @pytest.mark.asyncio

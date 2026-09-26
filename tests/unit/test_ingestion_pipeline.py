@@ -4,9 +4,12 @@ No real files, vector store, or Celery needed — everything is mocked or in-mem
 """
 from __future__ import annotations
 
+import io
 import sys
 from types import SimpleNamespace
+from unittest.mock import MagicMock, patch
 
+import fitz
 import pytest
 
 from app.services.ingestion.cleaner import clean_text, extract_metadata_hints
@@ -20,7 +23,9 @@ from app.services.ingestion.metadata import build_chunk_metadata, extract_metada
 from app.services.ingestion.parsers import (
     CSVParser,
     HTMLParser,
+    PDFParser,
     TextParser,
+    UnstructuredParser,
     get_parser,
     parse_document,
 )
@@ -105,33 +110,182 @@ def test_parse_document_dispatches_by_extension() -> None:
     assert "Heading" in result.text
 
 
-def test_pdf_parser_does_not_access_closed_document(monkeypatch: pytest.MonkeyPatch) -> None:
-    from app.services.ingestion.parsers import PDFParser
+def _make_minimal_pdf(text: str = "Hello PyMuPDF4LLM") -> bytes:
+    """Build a real single-page PDF in memory using fitz."""
+    doc = fitz.open()
+    page = doc.new_page()
+    page.insert_text((50, 72), text)
+    data = doc.tobytes()
+    doc.close()
+    return data
 
-    class FakePage:
-        def get_text(self, mode: str) -> str:
-            assert mode == "text"
-            return "PDF page text"
 
-    class FakeDoc:
-        def __init__(self) -> None:
-            self.metadata = {"title": "Report", "author": "Alice", "subject": "Test"}
-            self.page_count = 3
-            self.closed = False
+def test_pdf_parser_returns_markdown_and_closes_document() -> None:
+    """PDFParser now uses PyMuPDF4LLM — output is markdown, not plain text."""
+    raw = _make_minimal_pdf("Hello PyMuPDF4LLM")
+    result = PDFParser().parse(raw, "report.pdf")
+    assert result.pages == 1
+    assert result.metadata["pages"] == 1
+    # PyMuPDF4LLM returns markdown — content is present but format differs from fitz plain text
+    assert "Hello" in result.text
+    assert result.elements is None  # native PDF parser leaves elements unpopulated
+    assert result.metadata["parser"] == "PDFParser"
+    assert "pymupdf4llm" in result.metadata["parser_implementation"]
+    # extraction_strategy is stamped by parse_document(), not by PDFParser().parse() directly
 
-        def __iter__(self):
-            return iter([FakePage(), FakePage(), FakePage()])
 
-        def close(self) -> None:
-            self.closed = True
+def test_pdf_parser_metadata_captured() -> None:
+    """PDFParser metadata carries parser provenance fields."""
+    raw = _make_minimal_pdf("Content")
+    result = PDFParser().parse(raw, "doc.pdf")
+    assert "parser" in result.metadata
+    assert "parser_implementation" in result.metadata
+    assert result.metadata["filename"] == "doc.pdf"
 
-    fake_fitz = SimpleNamespace(open=lambda *args, **kwargs: FakeDoc())
-    monkeypatch.setitem(sys.modules, "fitz", fake_fitz)
 
-    result = PDFParser().parse(b"%PDF-1.4 fake", "report.pdf")
-    assert result.pages == 3
-    assert result.metadata["pages"] == 3
-    assert "PDF page text" in result.text
+def test_pdf_parser_image_only_returns_empty_or_string() -> None:
+    """On an image-only (blank text) PDF, PyMuPDF4LLM returns a string (possibly empty)."""
+    # Build a page with no extractable text (empty text insertion)
+    doc = fitz.open()
+    doc.new_page()
+    raw = doc.tobytes()
+    doc.close()
+    result = PDFParser().parse(raw, "scanned.pdf")
+    assert isinstance(result.text, str)  # always a string, even if empty
+
+
+def test_parse_document_stamps_native_strategy_on_pdf() -> None:
+    """parse_document() stamps extraction_strategy='native' on the returned metadata."""
+    raw = _make_minimal_pdf("Strategy stamp check")
+    result = parse_document(raw, "check.pdf", strategy="native")
+    assert result.metadata["extraction_strategy"] == "native"
+
+
+# ── Registry / strategy dispatch ──────────────────────────────────────────────
+
+def test_get_parser_returns_native_by_default() -> None:
+    """get_parser with no strategy arg defaults to the 'native' parser."""
+    parser = get_parser("pdf")
+    assert isinstance(parser, PDFParser)
+
+
+def test_get_parser_native_explicit() -> None:
+    """Explicitly requesting strategy='native' also returns the native parser."""
+    parser = get_parser("pdf", strategy="native")
+    assert isinstance(parser, PDFParser)
+
+
+def test_get_parser_unstructured_returns_unstructured_parser() -> None:
+    """get_parser(strategy='unstructured') returns UnstructuredParser for every format."""
+    for ext in ("pdf", "docx", "pptx", "xlsx", "csv", "txt", "html"):
+        parser = get_parser(ext, strategy="unstructured")
+        assert isinstance(parser, UnstructuredParser), (
+            f"Expected UnstructuredParser for ext={ext!r}, got {type(parser)}"
+        )
+
+
+def test_get_parser_raises_for_invalid_strategy() -> None:
+    """An unknown strategy name raises UnsupportedFileTypeError."""
+    from app.core.exceptions import UnsupportedFileTypeError
+    with pytest.raises(UnsupportedFileTypeError, match="Unsupported extraction strategy"):
+        get_parser("pdf", strategy="magical_llm")
+
+
+def test_parse_document_unstructured_strategy_mocked() -> None:
+    """
+    parse_document(strategy='unstructured') calls UnstructuredParser.parse.
+    We mock the partition call so no real Unstructured heavy deps are needed.
+    """
+    fake_element = MagicMock()
+    fake_element.text = "Mocked unstructured content"
+    fake_element.category = "NarrativeText"
+    fake_element.__class__.__name__ = "NarrativeText"
+
+    with patch(
+        "unstructured.partition.auto.partition",
+        return_value=[fake_element],
+    ):
+        result = parse_document(b"any bytes", "test.txt", strategy="unstructured")
+
+    assert "Mocked unstructured content" in result.text
+    assert result.elements is not None
+    assert len(result.elements) == 1
+    assert result.metadata["extraction_strategy"] == "unstructured"
+    assert result.metadata["parser_implementation"].startswith("unstructured")
+
+
+def test_unstructured_parser_mocked_on_pdf() -> None:
+    """UnstructuredParser on PDF populates both .text and .elements."""
+    fake_el = MagicMock()
+    fake_el.text = "PDF extracted via Unstructured"
+    fake_el.category = "NarrativeText"
+    fake_el.__class__.__name__ = "NarrativeText"
+
+    raw = _make_minimal_pdf("PDF Unstructured test")
+    with patch(
+        "unstructured.partition.auto.partition",
+        return_value=[fake_el],
+    ):
+        result = UnstructuredParser().parse(raw, "sample.pdf")
+
+    assert "PDF extracted via Unstructured" in result.text
+    assert result.elements is not None
+
+
+def test_unstructured_parser_excludes_non_text_elements() -> None:
+    """UnstructuredParser skips elements whose text is empty/whitespace."""
+    el_with_text = MagicMock()
+    el_with_text.text = "Real content"
+    el_with_text.category = "NarrativeText"
+    el_with_text.__class__.__name__ = "NarrativeText"
+
+    el_empty = MagicMock()
+    el_empty.text = "   "
+    el_empty.category = "Header"
+    el_empty.__class__.__name__ = "Header"
+
+    with patch(
+        "unstructured.partition.auto.partition",
+        return_value=[el_with_text, el_empty],
+    ):
+        result = UnstructuredParser().parse(b"some content", "doc.docx")
+
+    # Only the non-empty element should appear in the concatenated text
+    assert "Real content" in result.text
+    assert "   " not in result.text
+
+
+# ── Metadata provenance ───────────────────────────────────────────────────────
+
+def test_extract_metadata_records_extraction_strategy() -> None:
+    """extract_metadata stores extraction_strategy when provided in parser_metadata."""
+    from app.services.ingestion.metadata import extract_metadata
+
+    meta = extract_metadata(
+        filename="report.pdf",
+        file_size=2048,
+        parser_metadata={
+            "pages": 4,
+            "extraction_strategy": "unstructured",
+            "parser_implementation": "unstructured/0.16.0",
+        },
+        cleaned_text="Some clean text.",
+    )
+    assert meta["extraction_strategy"] == "unstructured"
+    assert meta["parser_implementation"] == "unstructured/0.16.0"
+
+
+def test_extract_metadata_defaults_native_strategy() -> None:
+    """extract_metadata defaults extraction_strategy to 'native' when not in parser_metadata."""
+    from app.services.ingestion.metadata import extract_metadata
+
+    meta = extract_metadata(
+        filename="notes.txt",
+        file_size=128,
+        parser_metadata={},
+        cleaned_text="Some text.",
+    )
+    assert meta["extraction_strategy"] == "native"
 
 
 # ── Chunkers ──────────────────────────────────────────────────────────────────

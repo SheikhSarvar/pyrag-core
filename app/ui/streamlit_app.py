@@ -456,11 +456,18 @@ def main() -> None:
                 )
             elif source == "Upload file":
                 st.info(f"Supported: {', '.join(sorted(SUPPORTED_EXTENSIONS))}")
+                extraction_strat = st.radio(
+                    "Extraction Strategy",
+                    ["native", "unstructured"],
+                    index=0,
+                    horizontal=True,
+                    help="native: PyMuPDF4LLM for PDF, format-specific parser for others. unstructured: partition all docs.",
+                )
                 up = st.file_uploader("Document (Local test only)", type=sorted(SUPPORTED_EXTENSIONS))
                 if up is not None:
                     with st.spinner("Parsing document locally..."):
                         try:
-                            parsed = parse_document(up.getvalue(), up.name)
+                            parsed = parse_document(up.getvalue(), up.name, strategy=extraction_strat)
                             raw_text = parsed.text
                             parsed_meta = parsed.metadata
                         except Exception as exc:

@@ -39,6 +39,7 @@ class DocumentListResponse(BaseModel):
 
 class ReindexRequest(BaseModel):
     document_ids: list[str] = Field(..., min_length=1)
+    extraction_strategy: str = "native"
 
 
 class JobStatusResponse(BaseModel):

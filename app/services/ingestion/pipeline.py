@@ -42,6 +42,7 @@ async def run_ingestion_pipeline(
     file_size: int,
     storage_path: str,
     chunk_strategy: str = "recursive",
+    extraction_strategy: str = "native",
     source_url: str | None = None,
     job_id: str | None = None,
     reindex: bool = False,
@@ -97,7 +98,7 @@ async def run_ingestion_pipeline(
             await _update_progress(15)
 
             # ── Step 2: Parse ─────────────────────────────────────────────────
-            parsed = parse_document(raw_data, filename)
+            parsed = parse_document(raw_data, filename, strategy=extraction_strategy)
             parsed_metadata = parsed.metadata
             await _update_progress(30)
 
@@ -136,10 +137,14 @@ async def run_ingestion_pipeline(
             parser_metadata=parsed_metadata,
             cleaned_text=cleaned,
             source_url=source_url,
+            extraction_strategy=extraction_strategy,
         )
         await _update_progress(50)
 
         # ── Step 5: Chunk ─────────────────────────────────────────────────────
+        # FUTURE EXTENSION: Element-aware chunker plugs in here.
+        # Instead of re-deriving structure from flattened text, it will consume
+        # `parsed.elements` directly when present. Scope for this pass is extraction only.
         chunker = get_chunker(chunk_strategy)
         chunk_results = chunker.chunk(cleaned)
         logger.info("Chunked document", document_id=document_id, chunks=len(chunk_results), strategy=chunk_strategy)

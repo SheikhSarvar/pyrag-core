@@ -254,6 +254,11 @@ class HierarchicalChunker(BaseChunker):
 
 # ── Factory ───────────────────────────────────────────────────────────────────
 
+# FUTURE EXTENSION (Step 9): Element-aware chunker
+# When adding structured element chunking, an ElementAwareChunker strategy would plug in here
+# (e.g. "by_title" or "element_aware"), consuming `ParsedDocument.elements` directly
+# rather than re-deriving structure from flattened text. Scope for this pass is extraction only.
+
 def get_chunker(strategy: str, **kwargs: int | float | str) -> BaseChunker:
     strategies: dict[str, type[BaseChunker]] = {
         "fixed": FixedSizeChunker,
