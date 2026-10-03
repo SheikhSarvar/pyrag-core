@@ -170,6 +170,8 @@ def ingest_url(
                     )
                     await doc_repo.set_status(document_id, "indexed")
                     await session.commit()
+                    from app.services.retrieval.cache import bump_dataset_cache_version
+                    await bump_dataset_cache_version(dataset_id)
                     return {"success": True, "chunks_indexed": total, "document_id": document_id}
 
                 except Exception as exc:

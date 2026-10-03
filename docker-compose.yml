@@ -2,6 +2,7 @@ name: pyrag-core
 
 x-common-env: &common-env
   ENVIRONMENT: ${ENVIRONMENT:-development}
+  DEBUG: ${DEBUG:-false}
   DATABASE_URL: postgresql+asyncpg://pyrag:pyrag@postgres:5432/pyrag
   REDIS_URL: redis://redis:6379/0
   CELERY_BROKER_URL: redis://redis:6379/1
@@ -59,7 +60,7 @@ services:
       context: .
       target: development
     container_name: pyrag-worker
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q ingestion,default
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q ingestion,default
     environment:
       <<: *common-env
     volumes:
@@ -81,7 +82,7 @@ services:
       context: .
       target: development
     container_name: pyrag-beat
-    command: celery -A app.worker.celery_app beat --loglevel=info
+    command: celery -A app.worker.celery_app:celery_app beat --loglevel=info
     environment:
       <<: *common-env
     volumes:

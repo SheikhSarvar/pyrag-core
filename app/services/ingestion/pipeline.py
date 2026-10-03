@@ -18,6 +18,7 @@ from app.services.ingestion.indexer import index_chunks
 from app.services.ingestion.metadata import extract_metadata
 from app.services.ingestion.parsers import parse_document
 from app.services.storage.minio_client import MinIOClient, get_minio_client
+from app.services.retrieval.cache import bump_dataset_cache_version
 from app.services.vector.base import VectorStore
 from app.services.vector.factory import get_vector_store
 
@@ -165,6 +166,7 @@ async def run_ingestion_pipeline(
         if job_repo and job_id:
             await job_repo.mark_completed(job_id, result={"chunks_indexed": total})
         await _update_progress(100)
+        await bump_dataset_cache_version(dataset_id)
 
         logger.info("Ingestion complete", document_id=document_id, chunks=total)
         return IngestionResult(

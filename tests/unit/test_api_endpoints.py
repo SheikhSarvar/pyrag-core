@@ -380,3 +380,166 @@ async def test_search_forwards_filters_and_threshold() -> None:
     assert isinstance(config, RetrievalConfig)
     assert config.score_threshold == 0.8
     assert config.filters == {"filename": "report.pdf"}
+
+
+@pytest.mark.asyncio
+async def test_search_applies_metadata_prefilter_before_vector_search() -> None:
+    from app.services.retrieval.context import CompressedContext, AssembledPrompt
+    from app.services.retrieval.query_understanding import UnderstoodQuery
+    from app.services.retrieval.pipeline import RetrievalResult
+
+    mock_result = RetrievalResult(
+        query=UnderstoodQuery(original="test", normalized="test", intent="search", keywords=["test"]),
+        prompt=AssembledPrompt(system="sys", user="usr", context_chunks=[], total_tokens=10),
+        context=CompressedContext(chunks=[], total_tokens=0, dropped_count=0),
+        raw_result_count=0,
+        mode="hybrid",
+    )
+
+    with patch("app.api.v1.endpoints.search.get_dataset_cache_version", AsyncMock(return_value=1)), \
+         patch("app.api.v1.endpoints.search.get_cached_search", AsyncMock(return_value=None)), \
+         patch("app.api.v1.endpoints.search.resolve_metadata_chunk_ids", AsyncMock(return_value=["chunk-1", "chunk-2"])), \
+         patch("app.api.v1.endpoints.search.run_retrieval_pipeline", AsyncMock(return_value=mock_result)) as mock_pipeline, \
+         patch("app.api.v1.endpoints.search.AnalyticsRepository") as mock_repo:
+        mock_repo.return_value.create = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/v1/search", json={
+                "dataset_id": "ds-1",
+                "query": "revenue",
+                "filters": {"filename": "report.pdf"},
+            })
+
+    assert resp.status_code == 200
+    _, kwargs = mock_pipeline.await_args
+    config = kwargs["config"]
+    assert config.filters == {"filename": "report.pdf", "chunk_id": ["chunk-1", "chunk-2"]}
+
+
+@pytest.mark.asyncio
+async def test_search_cache_hit_skips_retrieval() -> None:
+    cached_response = {
+        "query": "revenue",
+        "dataset_id": "ds-1",
+        "mode": "hybrid",
+        "results": [
+            {
+                "chunk_id": "chunk-1",
+                "score": 0.99,
+                "text": "Cached text",
+                "metadata": {"filename": "report.pdf"},
+                "document_title": "",
+                "filename": "report.pdf",
+                "source_url": "",
+            }
+        ],
+        "total_results": 1,
+        "reranked": True,
+        "metadata_filtered_chunk_ids": [],
+        "raw_candidates": [],
+        "reranked_candidates": [],
+    }
+
+    with patch("app.api.v1.endpoints.search.get_dataset_cache_version", AsyncMock(return_value=1)), \
+         patch("app.api.v1.endpoints.search.get_cached_search", AsyncMock(return_value=cached_response)), \
+         patch("app.api.v1.endpoints.search.run_retrieval_pipeline", AsyncMock()) as mock_pipeline, \
+         patch("app.api.v1.endpoints.search.AnalyticsRepository") as mock_repo:
+        mock_repo.return_value.create = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/v1/search", json={
+                "dataset_id": "ds-1",
+                "query": "revenue",
+            })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["cache_hit"] is True
+    assert data["results"][0]["chunk_id"] == "chunk-1"
+    assert mock_pipeline.await_count == 0
+
+
+@pytest.mark.asyncio
+async def test_search_debug_returns_trace() -> None:
+    from app.services.retrieval.context import CompressedContext, AssembledPrompt
+    from app.services.retrieval.query_understanding import UnderstoodQuery
+    from app.services.retrieval.pipeline import RetrievalResult
+
+    class Candidate:
+        def __init__(self, chunk_id: str, chunk_text: str, metadata: dict, score: float) -> None:
+            self.chunk_id = chunk_id
+            self.chunk_text = chunk_text
+            self.metadata = metadata
+            self.score = score
+
+    mock_result = RetrievalResult(
+        query=UnderstoodQuery(original="test", normalized="test", intent="search", keywords=["test"]),
+        prompt=AssembledPrompt(system="sys", user="usr", context_chunks=[], total_tokens=10),
+        context=CompressedContext(
+            chunks=[
+                {"id": "chunk-1", "text": "Final text", "score": 0.88, "metadata": {"filename": "report.pdf"}}
+            ],
+            total_tokens=5,
+            dropped_count=0,
+        ),
+        raw_result_count=1,
+        mode="hybrid",
+        raw_candidates=[Candidate("chunk-1", "Raw text", {"filename": "report.pdf"}, 0.77)],
+        reranked_candidates=[Candidate("chunk-1", "Raw text", {"filename": "report.pdf"}, 0.88)],
+    )
+
+    with patch("app.api.v1.endpoints.search.get_dataset_cache_version", AsyncMock(return_value=1)), \
+         patch("app.api.v1.endpoints.search.run_retrieval_pipeline", AsyncMock(return_value=mock_result)), \
+         patch("app.api.v1.endpoints.search.AnalyticsRepository") as mock_repo:
+        mock_repo.return_value.create = AsyncMock()
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            resp = await client.post("/api/v1/search/debug", json={
+                "dataset_id": "ds-1",
+                "query": "revenue",
+            })
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["raw_candidates"][0]["chunk_id"] == "chunk-1"
+    assert data["reranked_candidates"][0]["chunk_id"] == "chunk-1"
+    assert data["final_chunks"][0]["chunk_id"] == "chunk-1"
+
+
+@pytest.mark.asyncio
+async def test_document_chunks_returns_created_chunks() -> None:
+    from app.api.v1.endpoints import documents as documents_endpoint
+    from datetime import datetime
+
+    mock_document = MagicMock()
+    mock_document.original_name = "report.pdf"
+    mock_document.source_url = "https://example.com/report.pdf"
+    mock_chunk = MagicMock()
+    mock_chunk.id = "chunk-1"
+    mock_chunk.dataset_id = "ds-1"
+    mock_chunk.document_id = "doc-1"
+    mock_chunk.chunk_index = 0
+    mock_chunk.chunk_text = "Revenue grew 20%."
+    mock_chunk.token_count = 5
+    mock_chunk.vector_reference = "vec-1"
+    mock_chunk.chunk_metadata = {"filename": "report.pdf", "document_title": "Q3 Report"}
+    mock_chunk.created_at = mock_chunk.updated_at = datetime.utcnow()
+
+    mock_session = AsyncMock()
+
+    async def override_get_db() -> AsyncIterator[AsyncMock]:
+        yield mock_session
+
+    with patch.object(documents_endpoint, "DocumentRepository") as MockDocumentRepo, \
+         patch.object(documents_endpoint, "ChunkRepository") as MockChunkRepo:
+        MockDocumentRepo.return_value.get_or_raise = AsyncMock(return_value=mock_document)
+        MockChunkRepo.return_value.list_by_document = AsyncMock(return_value=[mock_chunk])
+
+        app.dependency_overrides[documents_endpoint.get_db] = override_get_db
+        try:
+            async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+                resp = await client.get("/api/v1/documents/doc-1/chunks")
+        finally:
+            app.dependency_overrides.pop(documents_endpoint.get_db, None)
+
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total"] == 1
+    assert data["items"][0]["id"] == "chunk-1"

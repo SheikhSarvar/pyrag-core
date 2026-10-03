@@ -75,6 +75,41 @@ class QdrantAdapter(VectorStore):
         if all_indexes_ready:
             _indexed_collections.add(collection_name)
 
+    @staticmethod
+    def _build_filter(filters: dict | None) -> qmodels.Filter | None:
+        if not filters:
+            return None
+
+        must_conditions: list[qmodels.FieldCondition] = []
+        should_conditions: list[qmodels.FieldCondition] = []
+        match_any_cls = getattr(qmodels, "MatchAny", None)
+        for key, value in filters.items():
+            if isinstance(value, (list, tuple, set)):
+                if match_any_cls is not None:
+                    must_conditions.append(
+                        qmodels.FieldCondition(
+                            key=key,
+                            match=match_any_cls(any=[str(item) for item in value]),
+                        )
+                    )
+                else:
+                    should_conditions.extend(
+                        qmodels.FieldCondition(
+                            key=key,
+                            match=qmodels.MatchValue(value=str(item)),
+                        )
+                        for item in value
+                    )
+            else:
+                must_conditions.append(
+                    qmodels.FieldCondition(
+                        key=key,
+                        match=qmodels.MatchValue(value=value),
+                    )
+                )
+
+        return qmodels.Filter(must=must_conditions, should=should_conditions or None)
+
     # ── Collection management ─────────────────────────────────────────────────
 
     async def create_collection(
@@ -180,17 +215,10 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, filters: dict
     ) -> None:
         try:
-            conditions = [
-                qmodels.FieldCondition(
-                    key=k,
-                    match=qmodels.MatchValue(value=v),
-                )
-                for k, v in filters.items()
-            ]
             await self._client.delete(
                 collection_name=collection_name,
                 points_selector=qmodels.FilterSelector(
-                    filter=qmodels.Filter(must=conditions)
+                    filter=self._build_filter(filters)
                 ),
                 wait=True,
             )
@@ -203,17 +231,14 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, query: SearchQuery
     ) -> list[SearchResult]:
         try:
-            qdrant_filter = None
-            if query.filters:
-                qdrant_filter = qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(
-                            key=k,
-                            match=qmodels.MatchValue(value=v),
-                        )
-                        for k, v in query.filters.items()
-                    ]
-                )
+            qdrant_filter = self._build_filter(query.filters)
+            logger.info(
+                "Running Qdrant search",
+                collection=collection_name,
+                top_k=query.top_k,
+                has_search=hasattr(self._client, "search"),
+                has_query_points=hasattr(self._client, "query_points"),
+            )
             if hasattr(self._client, "search"):
                 results = await self._client.search(
                     collection_name=collection_name,
@@ -223,8 +248,8 @@ class QdrantAdapter(VectorStore):
                     score_threshold=query.score_threshold,
                     with_payload=True,
                 )
-            else:
-                results = await self._client.query_points(
+            elif hasattr(self._client, "query_points"):
+                response = await self._client.query_points(
                     collection_name=collection_name,
                     query=query.vector,
                     query_filter=qdrant_filter,
@@ -232,12 +257,28 @@ class QdrantAdapter(VectorStore):
                     score_threshold=query.score_threshold,
                     with_payload=True,
                 )
-                results = getattr(results, "points", results)
+                results = getattr(response, "points", response)
+            else:
+                raise AttributeError(
+                    "Qdrant client does not expose search or query_points"
+                )
+
+            logger.info(
+                "Qdrant search complete",
+                collection=collection_name,
+                result_count=len(results),
+            )
             return [
                 SearchResult(id=str(r.id), score=r.score, payload=r.payload or {})
                 for r in results
             ]
         except Exception as exc:
+            logger.exception(
+                "Qdrant search failed",
+                collection=collection_name,
+                top_k=query.top_k,
+                error=str(exc),
+            )
             raise VectorStoreError(f"Search failed: {exc}") from exc
 
     async def get(
@@ -265,14 +306,7 @@ class QdrantAdapter(VectorStore):
         self, collection_name: str, filters: dict | None = None
     ) -> int:
         try:
-            qdrant_filter = None
-            if filters:
-                qdrant_filter = qmodels.Filter(
-                    must=[
-                        qmodels.FieldCondition(key=k, match=qmodels.MatchValue(value=v))
-                        for k, v in filters.items()
-                    ]
-                )
+            qdrant_filter = self._build_filter(filters)
             result = await self._client.count(
                 collection_name=collection_name,
                 count_filter=qdrant_filter,

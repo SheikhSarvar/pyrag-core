@@ -20,7 +20,8 @@ from app.core.exceptions import FileTooLargeError, NotFoundError, UnsupportedFil
 from app.core.logging import get_logger
 from app.core.validation import sanitize_filename
 from app.db.session import get_db
-from app.db.repositories import DatasetRepository, DocumentRepository, JobRepository
+from app.db.repositories import ChunkRepository, DatasetRepository, DocumentRepository, JobRepository
+from app.schemas.chunk import ChunkDetailResponse, ChunkListResponse
 from app.schemas.document import (
     DocumentListResponse,
     DocumentResponse,
@@ -30,10 +31,31 @@ from app.schemas.document import (
 )
 from app.services.ingestion.parsers import SUPPORTED_EXTENSIONS
 from app.services.storage.minio_client import MinIOClient, get_minio_client
+from app.services.retrieval.cache import bump_dataset_cache_version
 
 router = APIRouter()
 logger = get_logger(__name__)
 settings = get_settings()
+
+
+def _chunk_quality_flags(chunk, source_url: str | None) -> list[str]:
+    flags: list[str] = []
+    text = chunk.chunk_text or ""
+    metadata = chunk.chunk_metadata or {}
+
+    if len(text.strip()) < 50:
+        flags.append("very_short")
+    if len(text) > 6000:
+        flags.append("very_long")
+    if not metadata.get("filename"):
+        flags.append("missing_filename")
+    if not metadata.get("document_title"):
+        flags.append("missing_document_title")
+    if not metadata.get("source_url") and not source_url:
+        flags.append("missing_source_url")
+    if chunk.token_count <= 0:
+        flags.append("missing_token_count")
+    return flags
 
 
 # ── Upload ────────────────────────────────────────────────────────────────────
@@ -198,6 +220,46 @@ async def get_document(
     return DocumentResponse.model_validate(doc)
 
 
+@router.get("/{document_id}/chunks", response_model=ChunkListResponse)
+async def list_document_chunks(
+    document_id: str,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=100, ge=1, le=500),
+    session: AsyncSession = Depends(get_db),
+) -> ChunkListResponse:
+    doc_repo = DocumentRepository(session)
+    chunk_repo = ChunkRepository(session)
+
+    doc = await doc_repo.get_or_raise(document_id)
+    chunks = await chunk_repo.list_by_document(document_id)
+    total = len(chunks)
+    page = chunks[offset : offset + limit]
+
+    items: list[ChunkDetailResponse] = []
+    for chunk in page:
+        items.append(
+            ChunkDetailResponse(
+                id=chunk.id,
+                dataset_id=chunk.dataset_id,
+                document_id=chunk.document_id,
+                document_name=doc.original_name,
+                chunk_index=chunk.chunk_index,
+                chunk_text=chunk.chunk_text,
+                token_count=chunk.token_count,
+                vector_reference=chunk.vector_reference,
+                chunk_metadata=chunk.chunk_metadata,
+                word_count=len(chunk.chunk_text.split()),
+                char_count=len(chunk.chunk_text),
+                approx_token_count=max(1, len(chunk.chunk_text) // 4),
+                quality_flags=_chunk_quality_flags(chunk, doc.source_url),
+                created_at=chunk.created_at,
+                updated_at=chunk.updated_at,
+            )
+        )
+
+    return ChunkListResponse(items=items, total=total, offset=offset, limit=limit)
+
+
 # ── Delete ────────────────────────────────────────────────────────────────────
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -226,6 +288,7 @@ async def delete_document(
         pass
 
     await doc_repo.delete(document_id)
+    await bump_dataset_cache_version(doc.dataset_id)
 
 
 # ── Reindex ───────────────────────────────────────────────────────────────────
@@ -281,6 +344,7 @@ async def reindex_documents(
         )
         await job_repo.mark_started(job_id, celery_task_id=task.id)
         await session.commit()
+        await bump_dataset_cache_version(doc.dataset_id)
         queued.append({"document_id": doc_id, "job_id": job_id})
 
     return {"queued": queued, "total": len(queued)}

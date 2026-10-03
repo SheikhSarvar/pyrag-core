@@ -4,7 +4,8 @@ Wires together: understand -> expand -> retrieve (dense|sparse|hybrid) -> rerank
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Any
 
 from app.core.logging import get_logger
 from app.services.retrieval.context import (
@@ -44,6 +45,10 @@ class RetrievalResult:
     context: CompressedContext
     raw_result_count: int
     mode: str
+    raw_candidates: list[Any] = field(default_factory=list)
+    reranked_candidates: list[Any] = field(default_factory=list)
+    rerank_status: str = "not_requested"
+    rerank_error: str | None = None
 
 
 async def run_retrieval_pipeline(
@@ -69,6 +74,8 @@ async def run_retrieval_pipeline(
         logger.debug("Query expanded", variants=len(expanded.variants))
 
     raw_results: list = []
+    raw_candidates: list[Any] = []
+    rerank_outcome = None
 
     if cfg.mode == "standard":
         from app.services.retrieval.dense import dense_search
@@ -83,6 +90,7 @@ async def run_retrieval_pipeline(
                     filters=cfg.filters,
                 )
             )
+        raw_candidates = list(raw_results)
 
     elif cfg.mode == "hybrid":
         from app.services.retrieval.hybrid import hybrid_search
@@ -101,31 +109,65 @@ async def run_retrieval_pipeline(
                     session=session,
                 )
             )
+        raw_candidates = list(raw_results)
 
     else:
         raw_results = []
+        raw_candidates = []
 
     logger.debug("Retrieved candidates", count=len(raw_results), mode=cfg.mode)
 
     if cfg.rerank and raw_results:
         from app.services.retrieval.reranker import rerank_results
 
-        raw_results = await rerank_results(
+        logger.info(
+            "Starting rerank stage",
+            candidate_count=len(raw_results),
+            rerank_backend=cfg.rerank_backend,
+            rerank_top_k=cfg.rerank_top_k,
+        )
+        rerank_outcome = await rerank_results(
             search_query,
             raw_results,
             top_k=cfg.rerank_top_k,
             backend=cfg.rerank_backend,
         )
-        logger.debug("Reranked", kept=len(raw_results))
+        raw_results = rerank_outcome.results
+        logger.info(
+            "Reranked",
+            kept=len(raw_results),
+            status=rerank_outcome.status,
+            error=rerank_outcome.error,
+        )
     elif not cfg.rerank:
         raw_results = raw_results[: cfg.top_k]
 
     raw_count = len(raw_results)
+    rerank_status = "not_requested"
+    rerank_error: str | None = None
+    if cfg.rerank:
+        if rerank_outcome is not None:
+            rerank_status = rerank_outcome.status
+            rerank_error = rerank_outcome.error
+        elif not raw_results:
+            rerank_status = "empty"
+    else:
+        rerank_status = "disabled"
 
+    min_score = float("-inf") if cfg.rerank else 0.0
     context = compress_context(
         raw_results,
         max_tokens=cfg.max_context_tokens,
         dedup_threshold=cfg.dedup_threshold,
+        min_score=min_score,
+    )
+    logger.info(
+        "Context compressed",
+        input_count=len(raw_results),
+        kept_count=len(context.chunks),
+        dropped_count=context.dropped_count,
+        total_tokens=context.total_tokens,
+        min_score=min_score,
     )
 
     prompt = assemble_prompt(
@@ -141,4 +183,8 @@ async def run_retrieval_pipeline(
         context=context,
         raw_result_count=raw_count,
         mode=cfg.mode,
+        raw_candidates=raw_candidates,
+        reranked_candidates=list(raw_results),
+        rerank_status=rerank_status,
+        rerank_error=rerank_error,
     )

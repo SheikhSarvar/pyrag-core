@@ -76,6 +76,7 @@ async def index_chunks(
 
         for chunk, embedding in zip(batch, embeddings):
             vector_id = str(uuid.uuid4())
+            chunk_id = str(uuid.uuid4())
             chunk_meta = build_chunk_metadata(
                 doc_metadata=doc_metadata,
                 chunk_index=chunk.index,
@@ -90,6 +91,7 @@ async def index_chunks(
                     id=vector_id,
                     vector=embedding,
                     payload={
+                        "chunk_id": chunk_id,
                         "dataset_id": dataset_id,
                         "document_id": document_id,
                         "chunk_text": chunk.text,
@@ -98,6 +100,7 @@ async def index_chunks(
                 )
             )
             db_chunks.append({
+                "id": chunk_id,
                 "dataset_id": dataset_id,
                 "document_id": document_id,
                 "chunk_text": chunk.text,

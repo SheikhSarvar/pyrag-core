@@ -1,12 +1,8 @@
 import io
 from functools import lru_cache
-from typing import BinaryIO
+from typing import Any, BinaryIO
 
 import urllib3
-
-from minio import Minio
-from minio.deleteobjects import DeleteObject
-from minio.error import S3Error
 
 from app.core.config import get_settings
 from app.core.exceptions import StorageError
@@ -15,10 +11,31 @@ from app.core.logging import get_logger
 logger = get_logger(__name__)
 
 
+class _FallbackS3Error(Exception):
+    """Fallback storage error used when the MinIO SDK cannot be imported."""
+
+
+class _FallbackDeleteObject:
+    def __init__(self, object_name: str) -> None:
+        self.object_name = object_name
+
+
+def _load_minio_types() -> tuple[type[Exception], type[Any]]:
+    try:
+        from minio.deleteobjects import DeleteObject as MinioDeleteObject
+        from minio.error import S3Error as MinioS3Error
+
+        return MinioS3Error, MinioDeleteObject
+    except Exception:
+        return _FallbackS3Error, _FallbackDeleteObject
+
+
+S3Error, DeleteObject = _load_minio_types()
+
+
 class MinIOClient:
-    def __init__(self, client: Minio) -> None:
+    def __init__(self, client: Any) -> None:
         self._client = client
-        self._settings = get_settings()
 
     # ── Upload ────────────────────────────────────────────────────────────────
 
@@ -173,6 +190,11 @@ class MinIOClient:
 @lru_cache
 def get_minio_client() -> MinIOClient:
     settings = get_settings()
+    try:
+        from minio import Minio
+    except Exception as exc:  # pragma: no cover - depends on environment
+        raise RuntimeError("MinIO SDK is unavailable") from exc
+
     # Configure a connection pool so concurrent Celery workers don't exhaust
     # the default single-connection urllib3 pool.
     http_client = urllib3.PoolManager(
