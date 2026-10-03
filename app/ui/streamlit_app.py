@@ -39,6 +39,23 @@ def _chunks_to_rows(chunks: list[ChunkResult]) -> list[dict[str, Any]]:
     return rows
 
 
+def _parse_metadata_filters(raw_filters: str) -> dict[str, Any] | None:
+    raw_filters = raw_filters.strip()
+    if not raw_filters:
+        return None
+
+    parsed = json.loads(raw_filters)
+    if not isinstance(parsed, dict):
+        raise ValueError("Metadata filters must be a JSON object.")
+
+    cleaned = {
+        key: value
+        for key, value in parsed.items()
+        if key and not key.startswith("additionalProp") and value not in (None, "", [], {})
+    }
+    return cleaned or None
+
+
 def _build_chunker(strategy: str) -> tuple[object, dict[str, Any]]:
     params: dict[str, Any] = {}
 
@@ -209,25 +226,57 @@ def main() -> None:
             st.warning("Please select a dataset from the sidebar.")
         else:
             query = st.text_input("Search Query")
-            c1, c2, c3 = st.columns(3)
+            c1, c2, c3, c4 = st.columns(4)
             search_mode = c1.selectbox("Search Mode", ["hybrid", "standard"], index=0)
             top_k = c2.number_input("Top K Results", min_value=1, max_value=50, value=5)
             rerank = c3.checkbox("Enable Reranker", value=True)
+            expand_query = c4.checkbox("Expand Query", value=False)
+
+            threshold_enabled = st.checkbox("Apply Score Threshold", value=False)
+            score_threshold = (
+                st.slider(
+                    "Minimum Score",
+                    0.0,
+                    1.0,
+                    0.0,
+                    0.01,
+                    disabled=not threshold_enabled,
+                )
+                if threshold_enabled
+                else None
+            )
+
+            with st.expander("Metadata Filters (optional)"):
+                st.caption("Enter a JSON object, for example: {\"filename\": \"report.pdf\"}")
+                metadata_filters_raw = st.text_area(
+                    "Filters JSON",
+                    value="",
+                    height=120,
+                    placeholder='{"filename": "report.pdf"}',
+                    label_visibility="collapsed",
+                )
             
             if st.button("Search") and query:
                 with st.spinner("Searching vector database..."):
                     try:
+                        metadata_filters = _parse_metadata_filters(metadata_filters_raw)
                         r = requests.post(f"{api_url.rstrip('/')}/api/v1/search", json={
                             "dataset_id": selected_dataset_id,
                             "query": query,
                             "mode": search_mode,
                             "top_k": int(top_k),
-                            "rerank": rerank
+                            "rerank": rerank,
+                            "expand_query": expand_query,
+                            "score_threshold": score_threshold,
+                            "filters": metadata_filters,
                         }, timeout=60)
                         r.raise_for_status()
                         data = r.json()
                         results = data.get("results", [])
-                        st.success(f"Found {len(results)} chunks in {data.get('latency_ms', 0)}ms")
+                        st.success(
+                            f"Found {len(results)} chunks in {data.get('latency_ms', 0)}ms "
+                            f"(cache_hit={data.get('cache_hit', False)}, rerank_status={data.get('rerank_status', 'n/a')})"
+                        )
                         
                         for i, res in enumerate(results):
                             with st.expander(f"#{i+1} | Score: {res['score']:.4f} | Chunk ID: {res['chunk_id']}"):
