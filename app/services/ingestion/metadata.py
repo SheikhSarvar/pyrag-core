@@ -14,11 +14,13 @@ def extract_metadata(
     parser_metadata: dict,
     cleaned_text: str,
     source_url: str | None = None,
+    extraction_strategy: str | None = None,
 ) -> dict:
     """
     Build the final metadata dict stored in Chunk.chunk_metadata and Document.
 
     Priority: parser_metadata > heuristic hints > defaults.
+    Records extraction_strategy and parser_implementation to preserve provenance.
     """
     from app.services.ingestion.cleaner import extract_metadata_hints
 
@@ -32,6 +34,15 @@ def extract_metadata(
         or hints.get("inferred_title", "")
     )
 
+    strategy = extraction_strategy or parser_metadata.get("extraction_strategy") or "native"
+    parser_impl = parser_metadata.get("parser_implementation")
+    if not parser_impl:
+        if suffix == "pdf":
+            # If not stamped with a modern parser implementation, this document came from legacy fitz
+            parser_impl = "fitz/legacy"
+        else:
+            parser_impl = parser_metadata.get("parser") or f"native/{suffix or 'unknown'}"
+
     return {
         "filename": filename,
         "file_type": suffix,
@@ -43,6 +54,8 @@ def extract_metadata(
         "sheets": parser_metadata.get("sheets"),
         "word_count": hints.get("word_count", 0),
         "source_url": source_url or parser_metadata.get("source_url", ""),
+        "extraction_strategy": strategy,
+        "parser_implementation": parser_impl,
         "indexed_at": datetime.now(timezone.utc).isoformat(),
     }
 

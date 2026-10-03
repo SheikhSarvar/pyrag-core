@@ -29,7 +29,11 @@ from app.schemas.document import (
     JobStatusResponse,
     ReindexRequest,
 )
-from app.services.ingestion.parsers import SUPPORTED_EXTENSIONS
+from app.services.ingestion.parsers import (
+    DEFAULT_EXTRACTION_STRATEGY,
+    SUPPORTED_EXTENSIONS,
+    get_parser,
+)
 from app.services.storage.minio_client import MinIOClient, get_minio_client
 from app.services.retrieval.cache import bump_dataset_cache_version
 
@@ -64,6 +68,7 @@ def _chunk_quality_flags(chunk, source_url: str | None) -> list[str]:
 async def upload_document(
     dataset_id: str = Form(...),
     file: UploadFile = File(...),
+    extraction_strategy: str = Form(DEFAULT_EXTRACTION_STRATEGY),
     session: AsyncSession = Depends(get_db),
     minio: MinIOClient = Depends(get_minio_client),
 ) -> DocumentUploadResponse:
@@ -73,11 +78,13 @@ async def upload_document(
     ds_repo = DatasetRepository(session)
     dataset = await ds_repo.get_or_raise(dataset_id)
 
-    # Validate file type
+    # Validate file type and extraction strategy against registry
     filename = sanitize_filename(file.filename or "upload.bin")
     ext = Path(filename).suffix.lstrip(".").lower()
     if ext not in SUPPORTED_EXTENSIONS:
         raise UnsupportedFileTypeError(f"File type '.{ext}' is not supported")
+
+    get_parser(ext, strategy=extraction_strategy)
 
     # Validate file size (avoid buffering large uploads in memory)
     file_size: int
@@ -143,6 +150,7 @@ async def upload_document(
             "file_size": file_size,
             "storage_path": storage_path,
             "chunk_strategy": dataset.chunk_strategy,
+            "extraction_strategy": extraction_strategy,
         },
     )
 
@@ -162,6 +170,7 @@ async def upload_document(
                 "file_size": file_size,
                 "storage_path": storage_path,
                 "chunk_strategy": dataset.chunk_strategy,
+                "extraction_strategy": extraction_strategy,
                 "job_id": job_id,
             },
             task_id=job_id,
@@ -318,13 +327,18 @@ async def reindex_documents(
         dataset = _dataset_cache[doc.dataset_id]
         chunk_strategy = dataset.chunk_strategy if dataset else "recursive"
 
+        extraction_strategy = getattr(body, "extraction_strategy", DEFAULT_EXTRACTION_STRATEGY)
         job_id = str(uuid.uuid4())
         await job_repo.create(
             id=job_id,
             job_type="reindex",
             dataset_id=doc.dataset_id,
             document_id=doc_id,
-            payload={"storage_path": doc.storage_path, "chunk_strategy": chunk_strategy},
+            payload={
+                "storage_path": doc.storage_path,
+                "chunk_strategy": chunk_strategy,
+                "extraction_strategy": extraction_strategy,
+            },
         )
         await session.commit()
 
@@ -337,6 +351,7 @@ async def reindex_documents(
                 "file_size": doc.file_size,
                 "storage_path": doc.storage_path or "",
                 "chunk_strategy": chunk_strategy,
+                "extraction_strategy": extraction_strategy,
                 "job_id": job_id,
                 "reindex": True,  # signals pipeline to skip raw parse if processed text exists
             },

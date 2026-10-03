@@ -7,7 +7,7 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 
 @dataclass
@@ -15,6 +15,7 @@ class ParsedDocument:
     text: str
     metadata: dict = field(default_factory=dict)
     pages: int = 1
+    elements: list[Any] | None = None
 
 
 class Parser(Protocol):
@@ -24,24 +25,27 @@ class Parser(Protocol):
 # ── PDF ───────────────────────────────────────────────────────────────────────
 
 class PDFParser:
+    """Native PDF parser backed by PyMuPDF4LLM for markdown text extraction."""
+
     def parse(self, data: bytes, filename: str) -> ParsedDocument:
         import fitz  # pymupdf
+        import pymupdf4llm
 
         doc = fitz.open(stream=data, filetype="pdf")
         page_count = doc.page_count
-        pages_text: list[str] = []
-        for page in doc:
-            pages_text.append(page.get_text("text"))
-        text = "\n\n".join(pages_text)
         metadata = {
-            "title": doc.metadata.get("title", ""),
-            "author": doc.metadata.get("author", ""),
-            "subject": doc.metadata.get("subject", ""),
+            "title": doc.metadata.get("title", "") if doc.metadata else "",
+            "author": doc.metadata.get("author", "") if doc.metadata else "",
+            "subject": doc.metadata.get("subject", "") if doc.metadata else "",
             "pages": page_count,
             "filename": filename,
+            "parser": "PDFParser",
+            "parser_implementation": f"pymupdf4llm/{getattr(pymupdf4llm, '__version__', 'unknown')}",
         }
+        # Built-in OCR triggers automatically on pages with no extractable text
+        text = pymupdf4llm.to_markdown(doc) or ""
         doc.close()
-        return ParsedDocument(text=text, metadata=metadata, pages=page_count)
+        return ParsedDocument(text=text, metadata=metadata, pages=page_count, elements=None)
 
 
 # ── DOCX ──────────────────────────────────────────────────────────────────────
@@ -175,35 +179,161 @@ class WebScraper:
         )
 
 
+# ── Unstructured (Advanced Extraction) ───────────────────────────────────────
+
+class UnstructuredParser:
+    """
+    Advanced multi-format parser powered by Unstructured.
+    Extracts typed structural elements (Title, NarrativeText, Table, ListItem, etc.)
+    and produces both a flattened text representation (bridged with markdown headings)
+    and the structured elements list.
+    """
+
+    def parse(self, data: bytes, filename: str) -> ParsedDocument:
+        import unstructured
+        from unstructured.partition.auto import partition
+
+        elements = partition(file=io.BytesIO(data), metadata_filename=filename)
+
+        # Deliberate short-term bridge: Mark titles/headings with markdown syntax (e.g. '## <title>')
+        # in the flattened text so downstream text-based cleaner and chunkers can recognize
+        # structural boundaries without touching cleaner.py or chunker.py yet.
+        # Future extension: An element-aware chunker will consume `ParsedDocument.elements`
+        # directly instead of re-deriving structure from flattened text.
+        text_blocks: list[str] = []
+        for el in elements:
+            category = getattr(el, "category", "") or type(el).__name__
+            el_text = getattr(el, "text", None)
+            if el_text is None:
+                el_text = str(el)
+            el_text = str(el_text).strip()
+            if not el_text:
+                continue
+
+            if category in ("Title", "Header", "Subheadline"):
+                if not el_text.startswith("#"):
+                    text_blocks.append(f"## {el_text}")
+                else:
+                    text_blocks.append(el_text)
+            elif category == "ListItem":
+                if not (el_text.startswith("- ") or el_text.startswith("* ")):
+                    text_blocks.append(f"- {el_text}")
+                else:
+                    text_blocks.append(el_text)
+            elif category == "Table":
+                meta = getattr(el, "metadata", None)
+                table_html = getattr(meta, "text_as_html", None) if meta else None
+                text_blocks.append(table_html if table_html else el_text)
+            else:
+                text_blocks.append(el_text)
+
+        text = "\n\n".join(text_blocks)
+
+        page_numbers: list[int] = []
+        for el in elements:
+            meta = getattr(el, "metadata", None)
+            if meta is not None:
+                pn = getattr(meta, "page_number", None)
+                if isinstance(pn, int):
+                    page_numbers.append(pn)
+        pages = max(page_numbers) if page_numbers else 1
+
+        title = ""
+        for el in elements:
+            if getattr(el, "category", "") == "Title":
+                t = getattr(el, "text", None)
+                if t is None:
+                    t = str(el)
+                t = str(t).strip()
+                if t:
+                    title = t
+                    break
+
+        try:
+            from unstructured.__version__ import __version__ as unstructured_version
+        except Exception:
+            ver_obj = getattr(unstructured, "__version__", "unknown")
+            unstructured_version = getattr(ver_obj, "__version__", str(ver_obj))
+
+        metadata = {
+            "filename": filename,
+            "pages": pages,
+            "parser": "UnstructuredParser",
+            "parser_implementation": f"unstructured/{unstructured_version}",
+            "element_count": len(elements),
+        }
+        if title:
+            metadata["title"] = title
+
+        return ParsedDocument(text=text, metadata=metadata, pages=pages, elements=elements)
+
+
 # ── Registry ──────────────────────────────────────────────────────────────────
 
-_PARSERS: dict[str, Parser] = {
-    "pdf":  PDFParser(),
-    "docx": DOCXParser(),
-    "pptx": PPTXParser(),
-    "xlsx": XLSXParser(),
-    "xls":  XLSXParser(),
-    "csv":  CSVParser(),
-    "txt":  TextParser(),
-    "md":   TextParser(),
-    "markdown": TextParser(),
-    "html": HTMLParser(),
-    "htm":  HTMLParser(),
+DEFAULT_EXTRACTION_STRATEGY = "native"
+SUPPORTED_EXTRACTION_STRATEGIES = {"native", "unstructured"}
+
+_pdf_native = PDFParser()
+_docx_native = DOCXParser()
+_pptx_native = PPTXParser()
+_xlsx_native = XLSXParser()
+_csv_native = CSVParser()
+_text_native = TextParser()
+_html_native = HTMLParser()
+_unstructured = UnstructuredParser()
+
+_PARSER_REGISTRY: dict[str, dict[str, Parser]] = {
+    "pdf":      {"native": _pdf_native, "unstructured": _unstructured},
+    "docx":     {"native": _docx_native, "unstructured": _unstructured},
+    "pptx":     {"native": _pptx_native, "unstructured": _unstructured},
+    "xlsx":     {"native": _xlsx_native, "unstructured": _unstructured},
+    "xls":      {"native": _xlsx_native, "unstructured": _unstructured},
+    "csv":      {"native": _csv_native, "unstructured": _unstructured},
+    "txt":      {"native": _text_native, "unstructured": _unstructured},
+    "md":       {"native": _text_native, "unstructured": _unstructured},
+    "markdown": {"native": _text_native, "unstructured": _unstructured},
+    "html":     {"native": _html_native, "unstructured": _unstructured},
+    "htm":      {"native": _html_native, "unstructured": _unstructured},
 }
 
-SUPPORTED_EXTENSIONS = set(_PARSERS.keys())
+SUPPORTED_EXTENSIONS = set(_PARSER_REGISTRY.keys())
+_PARSERS = _PARSER_REGISTRY  # Backwards compatibility alias
 
 
-def get_parser(extension: str) -> Parser:
-    from app.core.exceptions import UnsupportedFileTypeError
+def get_supported_strategies(extension: str | None = None) -> set[str]:
+    """Return supported extraction strategies, optionally filtered by extension."""
+    if extension is None:
+        return set(SUPPORTED_EXTRACTION_STRATEGIES)
     ext = extension.lower().lstrip(".")
-    parser = _PARSERS.get(ext)
-    if parser is None:
+    ext_parsers = _PARSER_REGISTRY.get(ext)
+    if ext_parsers is None:
+        return set()
+    return set(ext_parsers.keys())
+
+
+def get_parser(extension: str, strategy: str = DEFAULT_EXTRACTION_STRATEGY) -> Parser:
+    from app.core.exceptions import UnsupportedFileTypeError
+
+    ext = extension.lower().lstrip(".")
+    ext_parsers = _PARSER_REGISTRY.get(ext)
+    if ext_parsers is None:
         raise UnsupportedFileTypeError(f"Unsupported file type: .{ext}")
+
+    parser = ext_parsers.get(strategy.lower())
+    if parser is None:
+        raise UnsupportedFileTypeError(
+            f"Unsupported extraction strategy '{strategy}' for file type: .{ext}"
+        )
     return parser
 
 
-def parse_document(data: bytes, filename: str) -> ParsedDocument:
+def parse_document(
+    data: bytes,
+    filename: str,
+    strategy: str = DEFAULT_EXTRACTION_STRATEGY,
+) -> ParsedDocument:
     ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
-    parser = get_parser(ext)
-    return parser.parse(data, filename)
+    parser = get_parser(ext, strategy=strategy)
+    doc = parser.parse(data, filename)
+    doc.metadata["extraction_strategy"] = strategy.lower()
+    return doc
