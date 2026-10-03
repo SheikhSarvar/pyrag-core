@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.core.exceptions import StorageError
-from app.services.storage.minio_client import MinIOClient
+from app.services.storage.minio_client import MinIOClient, S3Error
 
 
 @pytest.fixture
@@ -29,7 +29,6 @@ def test_upload_bytes_calls_put_object(client: MinIOClient, mock_minio: MagicMoc
 
 
 def test_upload_raises_storage_error_on_s3_error(client: MinIOClient, mock_minio: MagicMock) -> None:
-    from minio.error import S3Error
     mock_minio.put_object.side_effect = S3Error(
         code="NoSuchBucket", message="bucket missing",
         resource="raw", request_id="1", host_id="h", response=MagicMock()
@@ -66,7 +65,6 @@ def test_object_exists_true(client: MinIOClient, mock_minio: MagicMock) -> None:
 
 
 def test_object_exists_false_on_s3_error(client: MinIOClient, mock_minio: MagicMock) -> None:
-    from minio.error import S3Error
     mock_minio.stat_object.side_effect = S3Error(
         code="NoSuchKey", message="not found",
         resource="raw", request_id="1", host_id="h", response=MagicMock()

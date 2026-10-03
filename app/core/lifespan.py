@@ -1,4 +1,4 @@
-from contextlib import asynccontextmanager
+﻿from contextlib import asynccontextmanager
 from collections.abc import AsyncGenerator
 
 from fastapi import FastAPI
@@ -23,8 +23,12 @@ async def _startup(app: FastAPI) -> None:
             await conn.execute(text("SELECT 1"))
         logger.info("Database connection verified")
     except Exception as exc:
-        logger.error("Database connection failed", error=str(exc))
-        raise
+        logger.warning(
+            "Database connection failed; API will continue starting",
+            error=str(exc),
+        )
+        if settings.is_production:
+            raise
 
     # Verify Redis connectivity
     try:

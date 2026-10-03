@@ -60,7 +60,7 @@ services:
       context: .
       target: development
     container_name: pyrag-worker
-    command: celery -A app.worker.celery_app worker --loglevel=info --concurrency=4 -Q ingestion,default
+    command: celery -A app.worker.celery_app:celery_app worker --loglevel=info --concurrency=4 -Q ingestion,default
     environment:
       <<: *common-env
     volumes:
@@ -82,7 +82,7 @@ services:
       context: .
       target: development
     container_name: pyrag-beat
-    command: celery -A app.worker.celery_app beat --loglevel=info
+    command: celery -A app.worker.celery_app:celery_app beat --loglevel=info
     environment:
       <<: *common-env
     volumes:

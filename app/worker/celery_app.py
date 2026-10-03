@@ -1,3 +1,4 @@
+import os
 import asyncio
 
 from celery import Celery
@@ -33,6 +34,11 @@ celery_app.conf.update(
     task_time_limit=600,        # 10 min hard limit
     result_expires=86400,       # results kept 24h
 )
+
+if os.name == "nt":
+    # Celery's prefork pool is not reliable on Windows; use the solo pool so
+    # local development does not fail with multiprocessing semaphore errors.
+    celery_app.conf.worker_pool = "solo"
 
 
 @worker_process_init.connect

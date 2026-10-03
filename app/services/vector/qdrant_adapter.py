@@ -232,7 +232,6 @@ class QdrantAdapter(VectorStore):
     ) -> list[SearchResult]:
         try:
             qdrant_filter = self._build_filter(query.filters)
-            if hasattr(self._client, "search"):
             logger.info(
                 "Running Qdrant search",
                 collection=collection_name,
@@ -260,22 +259,15 @@ class QdrantAdapter(VectorStore):
                 )
                 results = getattr(response, "points", response)
             else:
-                raise AttributeError("Qdrant client does not expose search or query_points")
+                raise AttributeError(
+                    "Qdrant client does not expose search or query_points"
+                )
+
             logger.info(
                 "Qdrant search complete",
                 collection=collection_name,
                 result_count=len(results),
             )
-            else:
-                results = await self._client.query_points(
-                    collection_name=collection_name,
-                    query=query.vector,
-                    query_filter=qdrant_filter,
-                    limit=query.top_k,
-                    score_threshold=query.score_threshold,
-                    with_payload=True,
-                )
-                results = getattr(results, "points", results)
             return [
                 SearchResult(id=str(r.id), score=r.score, payload=r.payload or {})
                 for r in results

@@ -1,6 +1,8 @@
-from fastapi import FastAPI
+﻿from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.openapi.docs import get_swagger_ui_html
+from fastapi.responses import HTMLResponse
 
 from app.core.config import get_settings
 from app.core.exceptions import register_exception_handlers
@@ -17,7 +19,7 @@ def create_app() -> FastAPI:
         title=settings.project_name,
         version=settings.version,
         description="Open-source Python-first RAG platform",
-        docs_url="/docs" if not settings.is_production else None,
+        docs_url=None,
         redoc_url="/redoc" if not settings.is_production else None,
         openapi_url="/openapi.json" if not settings.is_production else None,
         lifespan=lifespan,
@@ -35,13 +37,17 @@ def create_app() -> FastAPI:
     app.add_middleware(RateLimitMiddleware)
     app.add_middleware(AuditLoggingMiddleware)
 
-    # ── Exception Handlers ─────────────────────────────────────────────────────
     register_exception_handlers(app)
 
-    # ── Routers ────────────────────────────────────────────────────────────────
+    @app.get("/docs", include_in_schema=False)
+    async def docs() -> HTMLResponse:
+        return get_swagger_ui_html(
+            openapi_url=app.openapi_url,
+            title=f"{settings.project_name} - Swagger UI",
+        )
+
     app.include_router(api_router, prefix=settings.api_v1_prefix)
 
-    # ── Health ─────────────────────────────────────────────────────────────────
     @app.get("/health", tags=["health"], include_in_schema=False)
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": settings.version}
@@ -58,3 +64,4 @@ def create_app() -> FastAPI:
 
 
 app = create_app()
+
