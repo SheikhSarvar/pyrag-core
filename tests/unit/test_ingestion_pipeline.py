@@ -255,6 +255,20 @@ def test_unstructured_parser_excludes_non_text_elements() -> None:
     assert "   " not in result.text
 
 
+def test_unstructured_parser_falls_back_to_native_when_shared_libs_missing() -> None:
+    """UnstructuredParser falls back to the native parser if native libs are unavailable."""
+    with patch(
+        "unstructured.partition.auto.partition",
+        side_effect=OSError("libGL.so.1: cannot open shared object file: No such file or directory"),
+    ):
+        result = UnstructuredParser().parse(b"Fallback content", "doc.txt")
+
+    assert "Fallback content" in result.text
+    assert result.metadata["extraction_strategy"] == "native"
+    assert result.metadata["parser_fallback"] == "unstructured_unavailable"
+    assert "libGL.so.1" in result.metadata["parser_fallback_reason"]
+
+
 # ── Metadata provenance ───────────────────────────────────────────────────────
 
 def test_extract_metadata_records_extraction_strategy() -> None:

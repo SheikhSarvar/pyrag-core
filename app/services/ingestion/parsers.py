@@ -7,6 +7,7 @@ from __future__ import annotations
 import csv
 import io
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 
@@ -29,10 +30,24 @@ class PDFParser:
 
     def parse(self, data: bytes, filename: str) -> ParsedDocument:
         import fitz  # pymupdf
-        import pymupdf4llm
 
         doc = fitz.open(stream=data, filetype="pdf")
         page_count = doc.page_count
+        text: str
+        parser_implementation: str
+        try:
+            import pymupdf4llm
+
+            text = pymupdf4llm.to_markdown(doc) or ""
+            parser_implementation = f"pymupdf4llm/{getattr(pymupdf4llm, '__version__', 'unknown')}"
+        except Exception:
+            text = "\n\n".join(
+                page.get_text("text").strip()
+                for page in doc
+                if page.get_text("text").strip()
+            )
+            parser_implementation = "fitz/text"
+
         metadata = {
             "title": doc.metadata.get("title", "") if doc.metadata else "",
             "author": doc.metadata.get("author", "") if doc.metadata else "",
@@ -40,10 +55,8 @@ class PDFParser:
             "pages": page_count,
             "filename": filename,
             "parser": "PDFParser",
-            "parser_implementation": f"pymupdf4llm/{getattr(pymupdf4llm, '__version__', 'unknown')}",
+            "parser_implementation": parser_implementation,
         }
-        # Built-in OCR triggers automatically on pages with no extractable text
-        text = pymupdf4llm.to_markdown(doc) or ""
         doc.close()
         return ParsedDocument(text=text, metadata=metadata, pages=page_count, elements=None)
 
@@ -190,10 +203,31 @@ class UnstructuredParser:
     """
 
     def parse(self, data: bytes, filename: str) -> ParsedDocument:
-        import unstructured
-        from unstructured.partition.auto import partition
+        try:
+            import unstructured
+            from unstructured.partition.auto import partition
 
-        elements = partition(file=io.BytesIO(data), metadata_filename=filename)
+            elements = partition(file=io.BytesIO(data), metadata_filename=filename)
+        except (ImportError, ModuleNotFoundError, OSError) as exc:
+            message = str(exc)
+            if not (
+                "libGL.so.1" in message
+                or "libxcb.so.1" in message
+                or "cannot open shared object file" in message
+            ):
+                raise
+
+            native_parser = get_parser(Path(filename).suffix, strategy="native")
+            fallback = native_parser.parse(data, filename)
+            fallback.metadata = dict(fallback.metadata)
+            fallback.metadata.update(
+                {
+                    "extraction_strategy": "native",
+                    "parser_fallback": "unstructured_unavailable",
+                    "parser_fallback_reason": message,
+                }
+            )
+            return fallback
 
         # Deliberate short-term bridge: Mark titles/headings with markdown syntax (e.g. '## <title>')
         # in the flattened text so downstream text-based cleaner and chunkers can recognize
@@ -261,6 +295,7 @@ class UnstructuredParser:
             "parser": "UnstructuredParser",
             "parser_implementation": f"unstructured/{unstructured_version}",
             "element_count": len(elements),
+            "extraction_strategy": "unstructured",
         }
         if title:
             metadata["title"] = title
@@ -335,5 +370,5 @@ def parse_document(
     ext = filename.rsplit(".", 1)[-1] if "." in filename else ""
     parser = get_parser(ext, strategy=strategy)
     doc = parser.parse(data, filename)
-    doc.metadata["extraction_strategy"] = strategy.lower()
+    doc.metadata["extraction_strategy"] = doc.metadata.get("extraction_strategy", strategy.lower())
     return doc

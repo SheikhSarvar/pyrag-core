@@ -92,6 +92,13 @@ This starts 8 containers: `api`, `celery_worker`, `celery_beat`, `postgres`, `re
 
 If you want Langfuse traces, set `LANGFUSE_PUBLIC_KEY`, `LANGFUSE_SECRET_KEY`, and `LANGFUSE_HOST` in `.env` to point at your Langfuse Cloud workspace.
 
+If ingestion fails with native library errors like `libxcb.so.1: cannot open shared object file` or `libGL.so.1: cannot open shared object file`, rebuild the API and worker images so the runtime dependencies from `Dockerfile` are included:
+
+```bash
+docker compose build --no-cache api celery_worker
+docker compose up -d
+```
+
 Check everything is healthy:
 ```bash
 docker compose ps

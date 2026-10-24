@@ -25,5 +25,5 @@ PyRAG Core uses a simple semantic versioning workflow:
 
 ## Current release
 
-The current documented release is `1.1.0`, which reflects the feature work
+The current documented release is `1.2.0`, which reflects the feature work
 merged into `main` after the initial project baseline.

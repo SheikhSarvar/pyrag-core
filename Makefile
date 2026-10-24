@@ -9,7 +9,7 @@ install-ui:
 
 # ── Dev server ────────────────────────────────────────────────────────────────
 dev:
-	uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+	uvicorn app.main:app --reload --reload-dir app --host 0.0.0.0 --port 8000
 
 ui:
 	streamlit run app/ui/streamlit_app.py --server.address 0.0.0.0 --server.port 8501

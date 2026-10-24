@@ -6,8 +6,6 @@ All providers implement the same interface: embed_texts(list[str]) -> list[list[
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from functools import lru_cache
-
 from openai import AsyncOpenAI
 
 from app.core.config import get_settings
@@ -167,7 +165,6 @@ class OllamaEmbedding(EmbeddingProvider):
 
 # ── Factory ───────────────────────────────────────────────────────────────────
 
-@lru_cache
 def get_embedding_provider() -> EmbeddingProvider:
     settings = get_settings()
     provider = settings.embedding_provider
