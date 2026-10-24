@@ -3,6 +3,34 @@
 All notable changes to PyRAG Core are recorded here using a lightweight
 semantic versioning approach.
 
+## [1.2.0] - 2026-10-03
+
+This release combines the recent `feature/chunk-retrieval-tools` and
+`feat/ingestion-parser-strategies` merges into `main`.
+
+### Added
+
+- Metadata filtering and expanded search options for chunk retrieval.
+- Retrieval caching and reranker warmup to improve query performance.
+- Stronger document and search API coverage across retrieval and ingestion
+  flows.
+
+### Changed
+
+- Ingestion now supports multiple parser strategies, including an
+  `Unstructured` path and an upgraded PDF parser based on `PyMuPDF4LLM`.
+- Document ingestion and pipeline handling now pass parser strategy metadata
+  through the API, worker, and UI layers.
+- MinIO, Qdrant, and Celery integration paths received resilience updates and
+  cleanup.
+
+### Fixed
+
+- Search and retrieval flows now handle metadata-aware chunk selection more
+  consistently.
+- API and unit tests were updated to match the new retrieval and ingestion
+  behavior.
+
 ## [1.1.0] - 2026-07-17
 
 This release is built from the current `main` history and captures the work
@@ -37,4 +65,3 @@ merged from the feature branches that followed the initial platform baseline.
 
 - Initial project baseline with the core FastAPI application, ingestion
   pipeline, retrieval services, data models, tests, and deployment docs.
-

@@ -138,7 +138,7 @@ async def run_ingestion_pipeline(
             parser_metadata=parsed_metadata,
             cleaned_text=cleaned,
             source_url=source_url,
-            extraction_strategy=extraction_strategy,
+            extraction_strategy=parsed_metadata.get("extraction_strategy") or extraction_strategy,
         )
         await _update_progress(50)
 

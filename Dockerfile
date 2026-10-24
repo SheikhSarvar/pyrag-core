@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
     libmagic1 \
+    libxcb1 \
+    libgl1 \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
@@ -32,7 +34,7 @@ FROM deps AS development
 
 RUN uv pip install --system ".[dev,ui]"
 
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload", "--reload-dir", "app"]
 
 # ── Production ────────────────────────────────────────────────────────────────
 FROM deps AS production

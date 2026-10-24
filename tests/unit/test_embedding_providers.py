@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.services.embedding.providers import OpenAIEmbedding, SentenceTransformerEmbedding
+from app.services.embedding.providers import get_embedding_provider
 
 
 # ── OpenAI ────────────────────────────────────────────────────────────────────
@@ -68,6 +69,18 @@ def test_openai_model_name() -> None:
         with patch("app.services.embedding.providers.AsyncOpenAI"):
             p = OpenAIEmbedding(model="text-embedding-3-small")
     assert p.model_name == "text-embedding-3-small"
+
+
+def test_get_embedding_provider_returns_fresh_instance() -> None:
+    with patch("app.services.embedding.providers.get_settings") as ms:
+        ms.return_value.openai_api_key = "sk-test"
+        ms.return_value.embedding_provider = "openai"
+        ms.return_value.embedding_model = "text-embedding-3-small"
+        with patch("app.services.embedding.providers.AsyncOpenAI"):
+            first = get_embedding_provider()
+            second = get_embedding_provider()
+
+    assert first is not second
 
 
 @pytest.mark.asyncio
